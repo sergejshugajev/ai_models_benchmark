@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -6,126 +7,104 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "0.8"
-OLLAMA_URL = "http://localhost:11434/api/generate"
+VERSION = "0.9"
+OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 EXIT_PROMPT = "\nНажми Enter для выхода..."
 
 
-def test_model(model, prompt):
-    print("\n" + "=" * 70)
-    print(f"ТЕСТ: {model}")
-    print("=" * 70)
+def format_number(value):
+    if value is None:
+        return "недоступно"
+    return f"{value:.2f}"
 
-    data = json.dumps(
-        {
-            "model": model,
-            "prompt": prompt,
-            "stream": True,
-        }
-    ).encode("utf-8")
 
-    request = urllib.request.Request(
-        OLLAMA_URL,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+def safe_filename(value):
+    for char in '<>:"/\\|?*':
+        value = value.replace(char, "-")
+    return value
 
-    start_time = time.perf_counter()
-    first_token_time = None
-    full_response = ""
-    eval_count = None
-    eval_duration = None
-    prompt_eval_count = None
-    load_duration = None
+
+def choose_number(count, prompt):
+    choice = input(prompt).strip()
+    if choice.isdigit() and 1 <= int(choice) <= count:
+        return int(choice) - 1
+    print("Неверный номер.")
+    return None
+
+
+def get_ollama_models():
+    try:
+        with urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=10) as response:
+            data = json.load(response)
+    except Exception:
+        return False, []
+
+    models = []
+    for item in data.get("models", []):
+        name = item.get("name") or item.get("model")
+        if name:
+            models.append(
+                {
+                    "source": "ollama",
+                    "provider": "ollama",
+                    "name": name,
+                    "full_name": name,
+                }
+            )
+    return True, models
+
+
+def get_opencode_models():
+    if shutil.which("opencode") is None:
+        return False, []
 
     try:
-        with urllib.request.urlopen(request, timeout=1800) as response:
-            for raw_line in response:
-                if not raw_line:
-                    continue
+        result = subprocess.run(
+            ["opencode", "models"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False, []
 
-                chunk = json.loads(raw_line.decode("utf-8"))
-                text = chunk.get("response", "")
-
-                if text:
-                    if first_token_time is None:
-                        first_token_time = time.perf_counter()
-
-                    full_response += text
-                    print(text, end="", flush=True)
-
-                if chunk.get("done"):
-                    eval_count = chunk.get("eval_count")
-                    eval_duration = chunk.get("eval_duration")
-                    prompt_eval_count = chunk.get("prompt_eval_count")
-                    load_duration = chunk.get("load_duration")
-    except Exception as error:
-        return {
-            "model": model,
-            "error": str(error),
-        }
-
-    end_time = time.perf_counter()
-    total_seconds = end_time - start_time
-
-    if first_token_time is not None:
-        first_token_seconds = first_token_time - start_time
-        generation_seconds = end_time - first_token_time
-    else:
-        first_token_seconds = None
-        generation_seconds = None
-
-    if eval_count and eval_duration:
-        official_tps = eval_count / (eval_duration / 1_000_000_000)
-    else:
-        official_tps = None
-
-    return {
-        "model": model,
-        "first_token_seconds": first_token_seconds,
-        "total_seconds": total_seconds,
-        "generation_seconds": generation_seconds,
-        "tokens_generated": eval_count,
-        "tokens_per_second": official_tps,
-        "prompt_tokens": prompt_eval_count,
-        "load_seconds": (
-            load_duration / 1_000_000_000
-            if load_duration is not None
-            else None
-        ),
-        "response": full_response,
-    }
-
-
-def format_number(value, digits=2):
-    if value is None:
-        return "нет данных"
-    return f"{value:.{digits}f}"
-
-
-def get_installed_models():
-    with urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=10) as response:
-        data = json.load(response)
-    return [item.get("name") or item["model"] for item in data.get("models", [])]
+    models = []
+    for line in result.stdout.splitlines():
+        full_name = line.strip()
+        if not full_name or "/" not in full_name:
+            continue
+        provider, name = full_name.split("/", 1)
+        models.append(
+            {
+                "source": "opencode",
+                "provider": provider,
+                "name": name,
+                "full_name": full_name,
+            }
+        )
+    return True, models
 
 
 def get_tests():
-    script_dir = Path(__file__).resolve().parent
     tests = []
-
-    for test_file in sorted(script_dir.glob("*.md")):
+    for test_file in sorted(Path(__file__).resolve().parent.glob("*.md")):
         lines = test_file.read_text(encoding="utf-8").splitlines()
         if lines and lines[0].startswith("#"):
-            title = lines[0].lstrip("#").strip()
-            prompt = "\n".join(lines[1:]).strip()
-            tests.append((test_file, title, prompt))
-
+            tests.append(
+                (
+                    test_file,
+                    lines[0].lstrip("#").strip(),
+                    "\n".join(lines[1:]).strip(),
+                )
+            )
     return tests
 
 
-def get_running_models():
+def get_running_ollama_models():
     result = subprocess.run(
         ["ollama", "ps"],
         capture_output=True,
@@ -138,93 +117,237 @@ def get_running_models():
     return [line.split()[0] for line in lines]
 
 
-def prepare_model(selected_model):
-    running_models = get_running_models()
-    if not running_models:
-        print("\nВ памяти нет загруженных моделей.")
-        return
-
-    print("\nСейчас в памяти:", ", ".join(running_models))
+def prepare_ollama_model(selected_model):
+    running_models = get_running_ollama_models()
     other_models = [model for model in running_models if model != selected_model]
 
-    if not other_models:
-        print("Выбранная модель уже загружена. Продолжаю.")
-        return
+    if selected_model in running_models:
+        print("\nВыбранная модель уже загружена в память.")
 
     for model in other_models:
-        print(f"Останавливаю {model}...")
+        print(f"\nОстанавливаю другую модель: {model}")
         subprocess.run(["ollama", "stop", model], check=True)
-    print("Другие модели остановлены. Запускаю тест.")
+
+
+def run_ollama_test(model, prompt):
+    data = json.dumps(
+        {"model": model["name"], "prompt": prompt, "stream": True}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        OLLAMA_GENERATE_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    start_time = time.perf_counter()
+    first_token_time = None
+    full_response = ""
+    final_chunk = {}
+
+    try:
+        with urllib.request.urlopen(request, timeout=1800) as response:
+            for raw_line in response:
+                chunk = json.loads(raw_line.decode("utf-8"))
+                text = chunk.get("response", "")
+                if text:
+                    if first_token_time is None:
+                        first_token_time = time.perf_counter()
+                    full_response += text
+                    print(text, end="", flush=True)
+                if chunk.get("done"):
+                    final_chunk = chunk
+    except Exception as error:
+        return make_error_result(model, error)
+
+    end_time = time.perf_counter()
+    eval_count = final_chunk.get("eval_count")
+    eval_duration = final_chunk.get("eval_duration")
+
+    return {
+        **model,
+        "first_token_seconds": (
+            first_token_time - start_time if first_token_time else None
+        ),
+        "total_seconds": end_time - start_time,
+        "tokens_per_second": (
+            eval_count / (eval_duration / 1_000_000_000)
+            if eval_count and eval_duration
+            else None
+        ),
+        "tokens_generated": eval_count,
+        "prompt_tokens": final_chunk.get("prompt_eval_count"),
+        "load_seconds": (
+            final_chunk.get("load_duration") / 1_000_000_000
+            if final_chunk.get("load_duration") is not None
+            else None
+        ),
+        "response": full_response,
+    }
+
+
+def opencode_text(event):
+    part = event.get("part") or {}
+    return event.get("text") or part.get("text") or ""
+
+
+def opencode_tokens(event):
+    part = event.get("part") or {}
+    return event.get("tokens") or part.get("tokens") or {}
+
+
+def run_opencode_test(model, prompt):
+    start_time = time.perf_counter()
+    full_response = ""
+    prompt_tokens = 0
+    output_tokens = 0
+
+    try:
+        process = subprocess.Popen(
+            [
+                "opencode",
+                "run",
+                "--format",
+                "json",
+                "--model",
+                model["full_name"],
+                prompt,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=Path(__file__).resolve().parent,
+        )
+
+        for line in process.stdout:
+            event = json.loads(line)
+            if event.get("type") == "text":
+                text = opencode_text(event)
+                full_response += text
+                print(text, end="", flush=True)
+            elif event.get("type") == "step_finish":
+                tokens = opencode_tokens(event)
+                prompt_tokens += tokens.get("input", 0) or 0
+                output_tokens += tokens.get("output", 0) or 0
+
+        error_text = process.stderr.read().strip()
+        return_code = process.wait()
+        if return_code:
+            raise RuntimeError(error_text or f"OpenCode завершился с кодом {return_code}")
+    except Exception as error:
+        return make_error_result(model, error)
+
+    return {
+        **model,
+        "first_token_seconds": None,
+        "total_seconds": time.perf_counter() - start_time,
+        "tokens_per_second": None,
+        "tokens_generated": output_tokens or None,
+        "prompt_tokens": prompt_tokens or None,
+        "load_seconds": None,
+        "response": full_response,
+    }
+
+
+def make_error_result(model, error):
+    return {**model, "error": str(error)}
+
+
+def print_result(result):
+    print("\n\nТЕСТ ЗАВЕРШЁН")
+    if "error" in result:
+        print("ОШИБКА:", result["error"])
+        return
+
+    print(f"До первого токена: {format_number(result['first_token_seconds'])}")
+    print(f"Полное время: {format_number(result['total_seconds'])} сек")
+    print(f"Скорость: {format_number(result['tokens_per_second'])}")
 
 
 def save_report(result, test_file, test_title, prompt):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    safe_model = result["model"].replace(":", "-")
-    script_dir = Path(__file__).resolve().parent
-    result_file = script_dir / (
-        f"ollama_test_{safe_model}_{test_file.stem}_{timestamp}.txt"
-    )
+    name_parts = [
+        "ai_test",
+        result["source"],
+        result["provider"],
+        result["name"],
+        test_file.stem,
+        timestamp,
+    ]
+    report_name = safe_filename("_".join(name_parts)) + ".txt"
+    report_path = Path(__file__).resolve().parent / report_name
 
-    with open(result_file, "w", encoding="utf-8") as file:
-        file.write(f"OLLAMA BENCHMARK v{VERSION}\n")
-        file.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        file.write(f"Модель: {result['model']}\n")
-        file.write(f"Тест: {test_title}\n")
-        file.write(f"Файл теста: {test_file.name}\n\n")
-        file.write("ПРОМТ:\n")
-        file.write(prompt)
-        file.write("\n\n")
+    with report_path.open("w", encoding="utf-8") as report:
+        report.write(f"AI MODELS BENCHMARK v{VERSION}\n")
+        report.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        report.write(f"Источник: {result['source'].title()}\n")
+        report.write(f"Провайдер: {result['provider']}\n")
+        report.write(f"Модель: {result['name']}\n")
+        report.write(f"Тест: {test_title}\n")
+        report.write(f"Файл теста: {test_file.name}\n\n")
+        report.write("ПРОМТ:\n")
+        report.write(prompt + "\n\n")
 
         if "error" in result:
-            file.write(f"ОШИБКА: {result['error']}\n")
+            report.write(f"ОШИБКА: {result['error']}\n")
         else:
-            file.write(
+            report.write(
                 f"До первого токена: {format_number(result['first_token_seconds'])} сек\n"
             )
-            file.write(
+            report.write(
                 f"Полное время: {format_number(result['total_seconds'])} сек\n"
             )
-            file.write(
-                "Скорость: "
-                f"{format_number(result['tokens_per_second'])} токен/сек\n"
+            report.write(
+                f"Скорость: {format_number(result['tokens_per_second'])} токен/сек\n"
             )
-            file.write(f"Сгенерировано токенов: {result['tokens_generated']}\n")
-            file.write(f"Токенов в промпте: {result['prompt_tokens']}\n")
-            file.write(
+            report.write(f"Токенов в промпте: {result['prompt_tokens']}\n")
+            report.write(f"Сгенерировано токенов: {result['tokens_generated']}\n")
+            report.write(
                 f"Загрузка модели: {format_number(result['load_seconds'])} сек\n\n"
             )
-            file.write("ОТВЕТ:\n")
-            file.write(result["response"])
-            file.write("\n")
+            report.write("ОТВЕТ:\n")
+            report.write(result["response"] + "\n")
 
-    return result_file.name
-
-
-def choose_number(count, prompt):
-    choice = input(prompt).strip()
-    if choice.isdigit() and 1 <= int(choice) <= count:
-        return int(choice) - 1
-    print("Неверный номер.")
-    return None
+    return report_path.name
 
 
 def main():
-    print(f"OLLAMA BENCHMARK v{VERSION}")
-    print("\nПроверяю установленные модели Ollama...")
+    print(f"AI MODELS BENCHMARK v{VERSION}")
+    print("=" * 60)
+    print("Поиск доступных моделей...\n")
 
-    models = get_installed_models()
+    ollama_found, ollama_models = get_ollama_models()
+    opencode_found, opencode_models = get_opencode_models()
+
+    print(
+        f"Ollama    - {len(ollama_models)} моделей"
+        if ollama_found
+        else "Ollama    - не обнаружена"
+    )
+    print(
+        f"OpenCode  - {len(opencode_models)} моделей"
+        if opencode_found
+        else "OpenCode  - не обнаружен"
+    )
+
+    models = ollama_models + opencode_models
     if not models:
-        print("\nУстановленные модели не найдены.")
+        print("\nДоступные модели не найдены.")
         return
 
-    print()
+    print("\nДоступные модели:\n")
     for number, model in enumerate(models, start=1):
-        print(f"{number} - {model}")
+        if model["source"] == "ollama":
+            label = f"Ollama — {model['name']}"
+        else:
+            label = f"OpenCode / {model['provider']} — {model['name']}"
+        print(f"{number} - {label}")
 
-    model_index = choose_number(len(models), "\nВыбери номер модели для теста: ")
+    model_index = choose_number(len(models), "\nВыбери номер модели: ")
     if model_index is None:
         return
-
     model = models[model_index]
 
     tests = get_tests()
@@ -239,29 +362,22 @@ def main():
     test_index = choose_number(len(tests), "\nВыбери номер теста: ")
     if test_index is None:
         return
-
     test_file, test_title, prompt = tests[test_index]
-    prepare_model(model)
-    result = test_model(model, prompt)
 
-    print("\n\nРезультат:")
-    if "error" in result:
-        print("ОШИБКА:", result["error"])
+    print(f"\nИсточник: {model['source'].title()}")
+    print(f"Провайдер: {model['provider']}")
+    print(f"Модель: {model['name']}")
+    print(f"Тест: {test_title}\n")
+
+    if model["source"] == "ollama":
+        prepare_ollama_model(model["name"])
+        result = run_ollama_test(model, prompt)
     else:
-        print(
-            "До первого токена:",
-            format_number(result["first_token_seconds"]),
-            "сек",
-        )
-        print("Полное время:", format_number(result["total_seconds"]), "сек")
-        print(
-            "Скорость:",
-            format_number(result["tokens_per_second"]),
-            "токен/сек",
-        )
+        result = run_opencode_test(model, prompt)
 
-    result_file = save_report(result, test_file, test_title, prompt)
-    print(f"\nПолный отчёт сохранён: {result_file}")
+    print_result(result)
+    report_name = save_report(result, test_file, test_title, prompt)
+    print(f"\nОтчёт сохранён: {report_name}")
 
 
 if __name__ == "__main__":
