@@ -6,3 +6,6 @@ ai_test_*.txt
 
 # Служебные рабочие файлы агента
 .agent_work/
+
+# Локальный конфиг OpenCode
+opencode.json
