@@ -2,9 +2,10 @@ import json
 import time
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 
 
-VERSION = "3"
+VERSION = "4"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODELS = [
     "qwen3-coder",
@@ -116,7 +117,8 @@ def format_number(value, digits=2):
 def save_report(result):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     safe_model = result["model"].replace(":", "-")
-    result_file = f"ollama_test_{safe_model}_{timestamp}.txt"
+    script_dir = Path(__file__).resolve().parent
+    result_file = script_dir / f"ollama_test_{safe_model}_{timestamp}.txt"
 
     with open(result_file, "w", encoding="utf-8") as file:
         file.write(f"OLLAMA BENCHMARK v{VERSION}\n")
@@ -148,7 +150,7 @@ def save_report(result):
             file.write(result["response"])
             file.write("\n")
 
-    return result_file
+    return result_file.name
 
 
 def main():
