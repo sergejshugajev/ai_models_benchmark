@@ -5,12 +5,9 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "4"
+VERSION = "5"
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODELS = [
-    "qwen3-coder",
-    "devstral",
-]
+OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 PROMPT = """
 Напиши на Python функцию, которая принимает список целых чисел и возвращает:
 1. минимальное значение;
@@ -114,6 +111,12 @@ def format_number(value, digits=2):
     return f"{value:.{digits}f}"
 
 
+def get_installed_models():
+    with urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=10) as response:
+        data = json.load(response)
+    return [item.get("name") or item["model"] for item in data.get("models", [])]
+
+
 def save_report(result):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     safe_model = result["model"].replace(":", "-")
@@ -155,16 +158,23 @@ def save_report(result):
 
 def main():
     print(f"OLLAMA BENCHMARK v{VERSION}")
+    print("\nПроверяю установленные модели Ollama...")
+
+    models = get_installed_models()
+    if not models:
+        print("\nУстановленные модели не найдены.")
+        return
+
     print()
-    for number, model in enumerate(MODELS, start=1):
+    for number, model in enumerate(models, start=1):
         print(f"{number} - {model}")
 
     choice = input("\nВыбери номер модели для теста: ").strip()
-    if not choice.isdigit() or not 1 <= int(choice) <= len(MODELS):
+    if not choice.isdigit() or not 1 <= int(choice) <= len(models):
         print("Неверный номер модели.")
         return
 
-    model = MODELS[int(choice) - 1]
+    model = models[int(choice) - 1]
     result = test_model(model)
 
     print("\n\nРезультат:")
