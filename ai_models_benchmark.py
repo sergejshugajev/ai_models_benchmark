@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "0.9a"
+VERSION = "0.9b"
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 EXIT_PROMPT = "\nНажми Enter для выхода..."
@@ -206,7 +206,20 @@ def opencode_tokens(event):
     return event.get("tokens") or part.get("tokens") or {}
 
 
-def run_opencode_test(model, prompt):
+def run_opencode_test(model, prompt, test_file):
+    script_dir = Path(__file__).resolve().parent
+    work_name = "_".join(
+        [
+            datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
+            safe_filename(model["name"]),
+            test_file.stem,
+        ]
+    )
+    agent_work_dir = script_dir / ".agent_work" / work_name
+    agent_work_dir.mkdir(parents=True, exist_ok=True)
+    relative_work_dir = str(agent_work_dir.relative_to(script_dir))
+    print(f"Рабочая папка агента: {relative_work_dir}\n")
+
     start_time = time.perf_counter()
     first_token_time = None
     full_response = ""
@@ -229,10 +242,12 @@ def run_opencode_test(model, prompt):
             text=True,
             encoding="utf-8",
             errors="replace",
-            cwd=Path(__file__).resolve().parent,
+            cwd=agent_work_dir,
         )
 
         for line in process.stdout:
+            if not line.strip():
+                continue
             event = json.loads(line)
             if event.get("type") == "text":
                 text = opencode_text(event)
@@ -250,7 +265,9 @@ def run_opencode_test(model, prompt):
         if return_code:
             raise RuntimeError(error_text or f"OpenCode завершился с кодом {return_code}")
     except Exception as error:
-        return make_error_result(model, error)
+        result = make_error_result(model, error)
+        result["agent_work_dir"] = relative_work_dir
+        return result
 
     end_time = time.perf_counter()
     generation_seconds = (
@@ -271,6 +288,7 @@ def run_opencode_test(model, prompt):
         "prompt_tokens": prompt_tokens or None,
         "load_seconds": None,
         "response": full_response,
+        "agent_work_dir": relative_work_dir,
     }
 
 
@@ -313,6 +331,8 @@ def save_report(result, test_file, test_title, prompt):
         location_label = "локально" if result["location"] == "local" else "облако"
         report.write(f"Источник: {source_name(result['source'])} ({location_label})\n")
         report.write(f"Модель: {result['name']}\n")
+        if result.get("agent_work_dir"):
+            report.write(f"Рабочая папка агента: {result['agent_work_dir']}\n")
         report.write(f"Тест: {test_title}\n")
         report.write(f"Файл теста: {test_file.name}\n\n")
         report.write("ПРОМТ:\n")
@@ -407,7 +427,7 @@ def main():
         prepare_ollama_model(model["name"])
         result = run_ollama_test(model, prompt)
     else:
-        result = run_opencode_test(model, prompt)
+        result = run_opencode_test(model, prompt, test_file)
 
     print_result(result)
     report_name = save_report(result, test_file, test_title, prompt)
