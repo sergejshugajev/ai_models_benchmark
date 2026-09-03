@@ -4,7 +4,7 @@ import urllib.request
 from datetime import datetime
 
 
-VERSION = "1"
+VERSION = "2"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODELS = [
     "qwen3-coder",
@@ -20,9 +20,6 @@ PROMPT = """
 Не используй сторонние библиотеки.
 Сначала кратко объясни решение, затем покажи код.
 """
-RESULT_FILE = "ollama_benchmark_results.txt"
-
-
 def test_model(model):
     print("\n" + "=" * 70)
     print(f"ТЕСТ: {model}")
@@ -116,91 +113,76 @@ def format_number(value, digits=2):
     return f"{value:.{digits}f}"
 
 
-def main():
-    print(f"OLLAMA BENCHMARK v{VERSION}")
-    print("Модели:", ", ".join(MODELS))
-    print()
-    print("Ничего не трогай — тест выполнится автоматически.")
+def save_report(result):
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    safe_model = result["model"].replace(":", "-")
+    result_file = f"ollama_test_{safe_model}_{timestamp}.txt"
 
-    results = []
-
-    for model in MODELS:
-        result = test_model(model)
-        results.append(result)
-
-        print("\n\nРезультат:")
-        if "error" in result:
-            print("ОШИБКА:", result["error"])
-        else:
-            print(
-                "До первого токена:",
-                format_number(result["first_token_seconds"]),
-                "сек",
-            )
-            print(
-                "Полное время:",
-                format_number(result["total_seconds"]),
-                "сек",
-            )
-            print(
-                "Скорость:",
-                format_number(result["tokens_per_second"]),
-                "токен/сек",
-            )
-            print("Сгенерировано токенов:", result["tokens_generated"])
-            print(
-                "Загрузка модели:",
-                format_number(result["load_seconds"]),
-                "сек",
-            )
-
-    print("\n" + "=" * 70)
-    print("СРАВНЕНИЕ")
-    print("=" * 70)
-
-    good_results = [result for result in results if "error" not in result]
-    for result in good_results:
-        print(
-            f"{result['model']:20} | "
-            f"первый токен: {format_number(result['first_token_seconds']):>8} сек | "
-            f"всего: {format_number(result['total_seconds']):>8} сек | "
-            f"скорость: {format_number(result['tokens_per_second']):>8} ток/с"
-        )
-
-    with open(RESULT_FILE, "w", encoding="utf-8") as file:
-        file.write("OLLAMA BENCHMARK\n")
-        file.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        file.write("PROMPT:\n")
+    with open(result_file, "w", encoding="utf-8") as file:
+        file.write(f"OLLAMA BENCHMARK v{VERSION}\n")
+        file.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        file.write(f"Модель: {result['model']}\n\n")
+        file.write("ПРОМТ:\n")
         file.write(PROMPT.strip())
         file.write("\n\n")
 
-        for result in results:
-            file.write("=" * 70 + "\n")
-            file.write(f"MODEL: {result['model']}\n")
-
-            if "error" in result:
-                file.write(f"ERROR: {result['error']}\n\n")
-                continue
-
+        if "error" in result:
+            file.write(f"ОШИБКА: {result['error']}\n")
+        else:
             file.write(
-                f"First token: {format_number(result['first_token_seconds'])} s\n"
+                f"До первого токена: {format_number(result['first_token_seconds'])} сек\n"
             )
-            file.write(f"Total time: {format_number(result['total_seconds'])} s\n")
             file.write(
-                "Generation speed: "
-                f"{format_number(result['tokens_per_second'])} tokens/s\n"
+                f"Полное время: {format_number(result['total_seconds'])} сек\n"
             )
-            file.write(f"Generated tokens: {result['tokens_generated']}\n")
-            file.write(f"Prompt tokens: {result['prompt_tokens']}\n")
             file.write(
-                f"Model load time: {format_number(result['load_seconds'])} s\n\n"
+                "Скорость: "
+                f"{format_number(result['tokens_per_second'])} токен/сек\n"
             )
-            file.write("RESPONSE:\n")
+            file.write(f"Сгенерировано токенов: {result['tokens_generated']}\n")
+            file.write(f"Токенов в промпте: {result['prompt_tokens']}\n")
+            file.write(
+                f"Загрузка модели: {format_number(result['load_seconds'])} сек\n\n"
+            )
+            file.write("ОТВЕТ:\n")
             file.write(result["response"])
-            file.write("\n\n")
+            file.write("\n")
 
+    return result_file
+
+
+def main():
+    print(f"OLLAMA BENCHMARK v{VERSION}")
     print()
-    print(f"Полный отчёт сохранён: {RESULT_FILE}")
+    for number, model in enumerate(MODELS, start=1):
+        print(f"{number} - {model}")
+
+    choice = input("\nВыбери номер модели для теста: ").strip()
+    if not choice.isdigit() or not 1 <= int(choice) <= len(MODELS):
+        print("Неверный номер модели.")
+        return
+
+    model = MODELS[int(choice) - 1]
+    result = test_model(model)
+
+    print("\n\nРезультат:")
+    if "error" in result:
+        print("ОШИБКА:", result["error"])
+    else:
+        print(
+            "До первого токена:",
+            format_number(result["first_token_seconds"]),
+            "сек",
+        )
+        print("Полное время:", format_number(result["total_seconds"]), "сек")
+        print(
+            "Скорость:",
+            format_number(result["tokens_per_second"]),
+            "токен/сек",
+        )
+
+    result_file = save_report(result)
+    print(f"\nПолный отчёт сохранён: {result_file}")
 
 
 if __name__ == "__main__":
