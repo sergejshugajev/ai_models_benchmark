@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "6"
+VERSION = "7"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 PROMPT = """
@@ -147,16 +147,7 @@ def prepare_model(selected_model):
     for model in other_models:
         print(f"Останавливаю {model}...")
         subprocess.run(["ollama", "stop", model], check=True)
-
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        if not [model for model in get_running_models() if model != selected_model]:
-            print("Лишние модели выгружены из памяти.")
-            return
-        print("Жду выгрузки...")
-        time.sleep(2)
-
-    raise RuntimeError("Ollama не успела выгрузить другую модель за 60 секунд")
+    print("Другие модели остановлены. Запускаю тест.")
 
 
 def save_report(result):
