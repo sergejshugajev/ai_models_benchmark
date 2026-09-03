@@ -4,7 +4,7 @@ import urllib.request
 from datetime import datetime
 
 
-VERSION = "2"
+VERSION = "3"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODELS = [
     "qwen3-coder",
@@ -186,4 +186,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        print(f"\nОШИБКА: {error}")
+        result_file = save_report(
+            {
+                "model": "не выбрана",
+                "error": str(error),
+            }
+        )
+        print(f"Ошибка сохранена в отчёт: {result_file}")
+    finally:
+        input("\nНажми Enter для выхода...")
