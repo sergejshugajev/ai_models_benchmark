@@ -6,20 +6,12 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "7"
+VERSION = "8"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
-PROMPT = """
-Напиши на Python функцию, которая принимает список целых чисел и возвращает:
-1. минимальное значение;
-2. максимальное значение;
-3. среднее арифметическое;
-4. медиану.
 
-Не используй сторонние библиотеки.
-Сначала кратко объясни решение, затем покажи код.
-"""
-def test_model(model):
+
+def test_model(model, prompt):
     print("\n" + "=" * 70)
     print(f"ТЕСТ: {model}")
     print("=" * 70)
@@ -27,7 +19,7 @@ def test_model(model):
     data = json.dumps(
         {
             "model": model,
-            "prompt": PROMPT,
+            "prompt": prompt,
             "stream": True,
         }
     ).encode("utf-8")
@@ -118,6 +110,28 @@ def get_installed_models():
     return [item.get("name") or item["model"] for item in data.get("models", [])]
 
 
+def get_tests():
+    script_dir = Path(__file__).resolve().parent
+    tests = []
+
+    for test_file in sorted(script_dir.glob("*.md")):
+        try:
+            lines = test_file.read_text(encoding="utf-8").splitlines()
+        except OSError as error:
+            print(f"Не удалось прочитать {test_file.name}: {error}")
+            continue
+
+        if not lines or not lines[0].startswith("#"):
+            continue
+
+        title = lines[0].lstrip("#").strip()
+        prompt = "\n".join(lines[1:]).strip()
+        if title and prompt:
+            tests.append((test_file, title, prompt))
+
+    return tests
+
+
 def get_running_models():
     result = subprocess.run(
         ["ollama", "ps"],
@@ -150,18 +164,25 @@ def prepare_model(selected_model):
     print("Другие модели остановлены. Запускаю тест.")
 
 
-def save_report(result):
+def save_report(result, test_file, test_title, prompt):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     safe_model = result["model"].replace(":", "-")
+    safe_test = test_file.stem
+    for bad_char in '<>:"/\\|?*':
+        safe_test = safe_test.replace(bad_char, "-")
     script_dir = Path(__file__).resolve().parent
-    result_file = script_dir / f"ollama_test_{safe_model}_{timestamp}.txt"
+    result_file = script_dir / (
+        f"ollama_test_{safe_model}_{safe_test}_{timestamp}.txt"
+    )
 
     with open(result_file, "w", encoding="utf-8") as file:
         file.write(f"OLLAMA BENCHMARK v{VERSION}\n")
         file.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        file.write(f"Модель: {result['model']}\n\n")
+        file.write(f"Модель: {result['model']}\n")
+        file.write(f"Тест: {test_title}\n")
+        file.write(f"Файл теста: {test_file.name}\n\n")
         file.write("ПРОМТ:\n")
-        file.write(PROMPT.strip())
+        file.write(prompt)
         file.write("\n\n")
 
         if "error" in result:
@@ -208,8 +229,24 @@ def main():
         return
 
     model = models[int(choice) - 1]
+
+    tests = get_tests()
+    if not tests:
+        print("\nТестовые .md-файлы не найдены.")
+        return
+
+    print("\nДоступные тесты:\n")
+    for number, (_, title, _) in enumerate(tests, start=1):
+        print(f"{number} - {title}")
+
+    choice = input("\nВыбери номер теста: ").strip()
+    if not choice.isdigit() or not 1 <= int(choice) <= len(tests):
+        print("Неверный номер теста.")
+        return
+
+    test_file, test_title, prompt = tests[int(choice) - 1]
     prepare_model(model)
-    result = test_model(model)
+    result = test_model(model, prompt)
 
     print("\n\nРезультат:")
     if "error" in result:
@@ -227,7 +264,7 @@ def main():
             "токен/сек",
         )
 
-    result_file = save_report(result)
+    result_file = save_report(result, test_file, test_title, prompt)
     print(f"\nПолный отчёт сохранён: {result_file}")
 
 
@@ -237,10 +274,10 @@ if __name__ == "__main__":
     except Exception as error:
         print(f"\nОШИБКА: {error}")
         result_file = save_report(
-            {
-                "model": "не выбрана",
-                "error": str(error),
-            }
+            {"model": "не выбрана", "error": str(error)},
+            Path("unknown.md"),
+            "не выбран",
+            "",
         )
         print(f"Ошибка сохранена в отчёт: {result_file}")
     finally:
