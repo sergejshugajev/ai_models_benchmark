@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "0.9b"
+VERSION = "0.9c"
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 EXIT_PROMPT = "\nНажми Enter для выхода..."
