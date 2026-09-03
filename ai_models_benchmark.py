@@ -101,7 +101,7 @@ def get_opencode_models():
 
 def get_tests():
     tests = []
-    for test_file in sorted(Path(__file__).resolve().parent.glob("*.md")):
+    for test_file in sorted(Path(__file__).resolve().parent.glob("[0-9][0-9]_*.md")):
         lines = test_file.read_text(encoding="utf-8").splitlines()
         if lines and lines[0].startswith("#"):
             tests.append(
@@ -406,7 +406,7 @@ def main():
 
     tests = get_tests()
     if not tests:
-        print("\nТестовые .md-файлы не найдены.")
+        print("\nТестовые файлы [0-9][0-9]_*.md не найдены.")
         return
 
     print("\nДоступные тесты:\n")
