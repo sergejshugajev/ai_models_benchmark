@@ -9,3 +9,6 @@ ai_test_*.txt
 
 # Локальный конфиг OpenCode
 opencode.json
+
+# Кэш Python
+__pycache__/
