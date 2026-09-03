@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "0.9"
+VERSION = "0.9a"
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 EXIT_PROMPT = "\nНажми Enter для выхода..."
@@ -17,6 +17,14 @@ def format_number(value):
     if value is None:
         return "недоступно"
     return f"{value:.2f}"
+
+
+def format_count(value):
+    return "недоступно" if value is None else str(value)
+
+
+def source_name(source):
+    return "OpenCode" if source == "opencode" else "Ollama"
 
 
 def safe_filename(value):
@@ -50,6 +58,7 @@ def get_ollama_models():
                     "provider": "ollama",
                     "name": name,
                     "full_name": name,
+                    "location": "local",
                 }
             )
     return True, models
@@ -84,6 +93,7 @@ def get_opencode_models():
                 "provider": provider,
                 "name": name,
                 "full_name": full_name,
+                "location": "cloud",
             }
         )
     return True, models
@@ -198,6 +208,7 @@ def opencode_tokens(event):
 
 def run_opencode_test(model, prompt):
     start_time = time.perf_counter()
+    first_token_time = None
     full_response = ""
     prompt_tokens = 0
     output_tokens = 0
@@ -225,6 +236,8 @@ def run_opencode_test(model, prompt):
             event = json.loads(line)
             if event.get("type") == "text":
                 text = opencode_text(event)
+                if text and first_token_time is None:
+                    first_token_time = time.perf_counter()
                 full_response += text
                 print(text, end="", flush=True)
             elif event.get("type") == "step_finish":
@@ -239,11 +252,21 @@ def run_opencode_test(model, prompt):
     except Exception as error:
         return make_error_result(model, error)
 
+    end_time = time.perf_counter()
+    generation_seconds = (
+        end_time - first_token_time if first_token_time is not None else None
+    )
     return {
         **model,
-        "first_token_seconds": None,
-        "total_seconds": time.perf_counter() - start_time,
-        "tokens_per_second": None,
+        "first_token_seconds": (
+            first_token_time - start_time if first_token_time is not None else None
+        ),
+        "total_seconds": end_time - start_time,
+        "tokens_per_second": (
+            output_tokens / generation_seconds
+            if output_tokens and generation_seconds
+            else None
+        ),
         "tokens_generated": output_tokens or None,
         "prompt_tokens": prompt_tokens or None,
         "load_seconds": None,
@@ -263,7 +286,13 @@ def print_result(result):
 
     print(f"До первого токена: {format_number(result['first_token_seconds'])}")
     print(f"Полное время: {format_number(result['total_seconds'])} сек")
-    print(f"Скорость: {format_number(result['tokens_per_second'])}")
+    print(
+        f"Скорость генерации: {format_number(result['tokens_per_second'])} токен/сек"
+    )
+    print(f"Токенов в промпте: {format_count(result['prompt_tokens'])}")
+    print(f"Сгенерировано токенов: {format_count(result['tokens_generated'])}")
+    if result["location"] == "local":
+        print(f"Загрузка модели: {format_number(result['load_seconds'])} сек")
 
 
 def save_report(result, test_file, test_title, prompt):
@@ -271,7 +300,6 @@ def save_report(result, test_file, test_title, prompt):
     name_parts = [
         "ai_test",
         result["source"],
-        result["provider"],
         result["name"],
         test_file.stem,
         timestamp,
@@ -282,8 +310,8 @@ def save_report(result, test_file, test_title, prompt):
     with report_path.open("w", encoding="utf-8") as report:
         report.write(f"AI MODELS BENCHMARK v{VERSION}\n")
         report.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        report.write(f"Источник: {result['source'].title()}\n")
-        report.write(f"Провайдер: {result['provider']}\n")
+        location_label = "локально" if result["location"] == "local" else "облако"
+        report.write(f"Источник: {source_name(result['source'])} ({location_label})\n")
         report.write(f"Модель: {result['name']}\n")
         report.write(f"Тест: {test_title}\n")
         report.write(f"Файл теста: {test_file.name}\n\n")
@@ -300,13 +328,20 @@ def save_report(result, test_file, test_title, prompt):
                 f"Полное время: {format_number(result['total_seconds'])} сек\n"
             )
             report.write(
-                f"Скорость: {format_number(result['tokens_per_second'])} токен/сек\n"
+                "Скорость генерации: "
+                f"{format_number(result['tokens_per_second'])} токен/сек\n"
             )
-            report.write(f"Токенов в промпте: {result['prompt_tokens']}\n")
-            report.write(f"Сгенерировано токенов: {result['tokens_generated']}\n")
             report.write(
-                f"Загрузка модели: {format_number(result['load_seconds'])} сек\n\n"
+                f"Токенов в промпте: {format_count(result['prompt_tokens'])}\n"
             )
+            report.write(
+                f"Сгенерировано токенов: {format_count(result['tokens_generated'])}\n"
+            )
+            if result["location"] == "local":
+                report.write(
+                    f"Загрузка модели: {format_number(result['load_seconds'])} сек\n"
+                )
+            report.write("\n")
             report.write("ОТВЕТ:\n")
             report.write(result["response"] + "\n")
 
@@ -324,12 +359,12 @@ def main():
     print(
         f"Ollama    - {len(ollama_models)} моделей"
         if ollama_found
-        else "Ollama    - не обнаружена"
+        else "Ollama    - не обнаружена (нужен запущенный Ollama)"
     )
     print(
         f"OpenCode  - {len(opencode_models)} моделей"
         if opencode_found
-        else "OpenCode  - не обнаружен"
+        else "OpenCode  - не обнаружен (нужен OpenCode CLI, команда 'opencode')"
     )
 
     models = ollama_models + opencode_models
@@ -339,10 +374,9 @@ def main():
 
     print("\nДоступные модели:\n")
     for number, model in enumerate(models, start=1):
-        if model["source"] == "ollama":
-            label = f"Ollama — {model['name']}"
-        else:
-            label = f"OpenCode / {model['provider']} — {model['name']}"
+        location_label = "локально" if model["location"] == "local" else "облако"
+        source_label = source_name(model["source"])
+        label = f"{source_label} — {model['name']} ({location_label})"
         print(f"{number} - {label}")
 
     model_index = choose_number(len(models), "\nВыбери номер модели: ")
@@ -364,8 +398,8 @@ def main():
         return
     test_file, test_title, prompt = tests[test_index]
 
-    print(f"\nИсточник: {model['source'].title()}")
-    print(f"Провайдер: {model['provider']}")
+    location_label = "локально" if model["location"] == "local" else "облако"
+    print(f"\nИсточник: {source_name(model['source'])} ({location_label})")
     print(f"Модель: {model['name']}")
     print(f"Тест: {test_title}\n")
 
