@@ -6,9 +6,10 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "8"
+VERSION = "0.8"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
+EXIT_PROMPT = "\nНажми Enter для выхода..."
 
 
 def test_model(model, prompt):
@@ -115,18 +116,10 @@ def get_tests():
     tests = []
 
     for test_file in sorted(script_dir.glob("*.md")):
-        try:
-            lines = test_file.read_text(encoding="utf-8").splitlines()
-        except OSError as error:
-            print(f"Не удалось прочитать {test_file.name}: {error}")
-            continue
-
-        if not lines or not lines[0].startswith("#"):
-            continue
-
-        title = lines[0].lstrip("#").strip()
-        prompt = "\n".join(lines[1:]).strip()
-        if title and prompt:
+        lines = test_file.read_text(encoding="utf-8").splitlines()
+        if lines and lines[0].startswith("#"):
+            title = lines[0].lstrip("#").strip()
+            prompt = "\n".join(lines[1:]).strip()
             tests.append((test_file, title, prompt))
 
     return tests
@@ -167,12 +160,9 @@ def prepare_model(selected_model):
 def save_report(result, test_file, test_title, prompt):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     safe_model = result["model"].replace(":", "-")
-    safe_test = test_file.stem
-    for bad_char in '<>:"/\\|?*':
-        safe_test = safe_test.replace(bad_char, "-")
     script_dir = Path(__file__).resolve().parent
     result_file = script_dir / (
-        f"ollama_test_{safe_model}_{safe_test}_{timestamp}.txt"
+        f"ollama_test_{safe_model}_{test_file.stem}_{timestamp}.txt"
     )
 
     with open(result_file, "w", encoding="utf-8") as file:
@@ -210,6 +200,14 @@ def save_report(result, test_file, test_title, prompt):
     return result_file.name
 
 
+def choose_number(count, prompt):
+    choice = input(prompt).strip()
+    if choice.isdigit() and 1 <= int(choice) <= count:
+        return int(choice) - 1
+    print("Неверный номер.")
+    return None
+
+
 def main():
     print(f"OLLAMA BENCHMARK v{VERSION}")
     print("\nПроверяю установленные модели Ollama...")
@@ -223,12 +221,11 @@ def main():
     for number, model in enumerate(models, start=1):
         print(f"{number} - {model}")
 
-    choice = input("\nВыбери номер модели для теста: ").strip()
-    if not choice.isdigit() or not 1 <= int(choice) <= len(models):
-        print("Неверный номер модели.")
+    model_index = choose_number(len(models), "\nВыбери номер модели для теста: ")
+    if model_index is None:
         return
 
-    model = models[int(choice) - 1]
+    model = models[model_index]
 
     tests = get_tests()
     if not tests:
@@ -239,12 +236,11 @@ def main():
     for number, (_, title, _) in enumerate(tests, start=1):
         print(f"{number} - {title}")
 
-    choice = input("\nВыбери номер теста: ").strip()
-    if not choice.isdigit() or not 1 <= int(choice) <= len(tests):
-        print("Неверный номер теста.")
+    test_index = choose_number(len(tests), "\nВыбери номер теста: ")
+    if test_index is None:
         return
 
-    test_file, test_title, prompt = tests[int(choice) - 1]
+    test_file, test_title, prompt = tests[test_index]
     prepare_model(model)
     result = test_model(model, prompt)
 
@@ -273,12 +269,5 @@ if __name__ == "__main__":
         main()
     except Exception as error:
         print(f"\nОШИБКА: {error}")
-        result_file = save_report(
-            {"model": "не выбрана", "error": str(error)},
-            Path("unknown.md"),
-            "не выбран",
-            "",
-        )
-        print(f"Ошибка сохранена в отчёт: {result_file}")
     finally:
-        input("\nНажми Enter для выхода...")
+        input(EXIT_PROMPT)
