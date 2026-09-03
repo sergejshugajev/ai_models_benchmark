@@ -1,11 +1,12 @@
 import json
+import subprocess
 import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "5"
+VERSION = "6"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 PROMPT = """
@@ -117,6 +118,47 @@ def get_installed_models():
     return [item.get("name") or item["model"] for item in data.get("models", [])]
 
 
+def get_running_models():
+    result = subprocess.run(
+        ["ollama", "ps"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    )
+    lines = [line for line in result.stdout.splitlines()[1:] if line.strip()]
+    return [line.split()[0] for line in lines]
+
+
+def prepare_model(selected_model):
+    running_models = get_running_models()
+    if not running_models:
+        print("\nВ памяти нет загруженных моделей.")
+        return
+
+    print("\nСейчас в памяти:", ", ".join(running_models))
+    other_models = [model for model in running_models if model != selected_model]
+
+    if not other_models:
+        print("Выбранная модель уже загружена. Продолжаю.")
+        return
+
+    for model in other_models:
+        print(f"Останавливаю {model}...")
+        subprocess.run(["ollama", "stop", model], check=True)
+
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if not [model for model in get_running_models() if model != selected_model]:
+            print("Лишние модели выгружены из памяти.")
+            return
+        print("Жду выгрузки...")
+        time.sleep(2)
+
+    raise RuntimeError("Ollama не успела выгрузить другую модель за 60 секунд")
+
+
 def save_report(result):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     safe_model = result["model"].replace(":", "-")
@@ -175,6 +217,7 @@ def main():
         return
 
     model = models[int(choice) - 1]
+    prepare_model(model)
     result = test_model(model)
 
     print("\n\nРезультат:")
