@@ -262,6 +262,9 @@ def run_opencode_test(model, prompt, test_file):
 
         error_text = process.stderr.read().strip()
         return_code = process.wait()
+        if not any(agent_work_dir.iterdir()):
+            agent_work_dir.rmdir()
+            relative_work_dir = None
         if return_code:
             raise RuntimeError(error_text or f"OpenCode завершился с кодом {return_code}")
     except Exception as error:
