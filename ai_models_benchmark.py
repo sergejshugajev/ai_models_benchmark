@@ -394,35 +394,39 @@ def save_report(result, test_file, test_title, prompt):
         if result.get("agent_work_dir"):
             report.write(f"Рабочая папка агента: {result['agent_work_dir']}\n")
         report.write(f"Тест: {test_title}\n")
-        report.write(f"Файл теста: {test_file.name}\n\n")
-        report.write("ПРОМТ:\n")
-        report.write(prompt + "\n\n")
+        report.write(f"Файл теста: {test_file.name}\n")
+
+        report.write("\nМЕТРИКИ:\n")
+        report.write(
+            f"До первого токена: {format_number(result.get('first_token_seconds'))} сек\n"
+        )
+        report.write(
+            f"Полное время: {format_number(result.get('total_seconds'))} сек\n"
+        )
+        report.write(
+            "Скорость генерации: "
+            f"{format_number(result.get('tokens_per_second'))} токен/сек\n"
+        )
+        report.write(
+            f"Токенов в промпте: {format_count(result.get('prompt_tokens'))}\n"
+        )
+        report.write(
+            f"Сгенерировано токенов: {format_count(result.get('tokens_generated'))}\n"
+        )
+        if result["source"] == "opencode":
+            report.write(
+                f"Шагов агента: {format_count(result.get('agent_steps'))}\n"
+            )
+        if result["location"] == "local":
+            report.write(
+                f"Загрузка модели: {format_number(result.get('load_seconds'))} сек\n"
+            )
 
         if "error" in result:
-            report.write(f"ОШИБКА: {result['error']}\n")
-        else:
-            report.write(
-                f"До первого токена: {format_number(result['first_token_seconds'])} сек\n"
-            )
-            report.write(
-                f"Полное время: {format_number(result['total_seconds'])} сек\n"
-            )
-            report.write(
-                "Скорость генерации: "
-                f"{format_number(result['tokens_per_second'])} токен/сек\n"
-            )
-            report.write(
-                f"Токенов в промпте: {format_count(result['prompt_tokens'])}\n"
-            )
-            report.write(
-                f"Сгенерировано токенов: {format_count(result['tokens_generated'])}\n"
-            )
-            if result["source"] == "opencode":
-                report.write(f"Шагов агента: {result['agent_steps']}\n")
-            if result["location"] == "local":
-                report.write(
-                    f"Загрузка модели: {format_number(result['load_seconds'])} сек\n"
-                )
+            report.write(f"\nОШИБКА:\n{result['error']}\n")
+
+        report.write("\nПРОМТ:\n")
+        report.write(prompt + "\n")
 
         if result.get("event_log"):
             report.write("\nХОД РАБОТЫ АГЕНТА:\n")
