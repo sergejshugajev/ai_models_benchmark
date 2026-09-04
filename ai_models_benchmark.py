@@ -386,7 +386,7 @@ def save_report(result, test_file, test_title, prompt):
     report_path = Path(__file__).resolve().parent / report_name
 
     with report_path.open("w", encoding="utf-8") as report:
-        report.write(f"AI MODELS BENCHMARK v{VERSION}\n")
+        report.write(f"# AI MODELS BENCHMARK v{VERSION}\n")
         report.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         location_label = "локально" if result["location"] == "local" else "облако"
         report.write(f"Источник: {source_name(result['source'])} ({location_label})\n")
@@ -396,7 +396,7 @@ def save_report(result, test_file, test_title, prompt):
         report.write(f"Тест: {test_title}\n")
         report.write(f"Файл теста: {test_file.name}\n")
 
-        report.write("\nМЕТРИКИ:\n")
+        report.write("\n# МЕТРИКИ:\n")
         report.write(
             f"До первого токена: {format_number(result.get('first_token_seconds'))} сек\n"
         )
@@ -423,17 +423,17 @@ def save_report(result, test_file, test_title, prompt):
             )
 
         if "error" in result:
-            report.write(f"\nОШИБКА:\n{result['error']}\n")
+            report.write(f"\n# ОШИБКА:\n{result['error']}\n")
 
-        report.write("\nПРОМТ:\n")
+        report.write("\n# ПРОМТ:\n")
         report.write(prompt + "\n")
 
         if result.get("event_log"):
-            report.write("\nХОД РАБОТЫ АГЕНТА:\n")
+            report.write("\n# ЖУРНАЛ ВЫПОЛНЕНИЯ:\n")
             report.write(result["event_log"] + "\n")
 
         if "error" not in result:
-            report.write("\nОТВЕТ МОДЕЛИ:\n")
+            report.write("\n# ОТВЕТ МОДЕЛИ:\n")
             report.write(result["response"] + "\n")
 
     return report_path.name
