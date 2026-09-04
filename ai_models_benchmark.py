@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "0.9c"
+VERSION = "0.9d"
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 EXIT_PROMPT = "\nНажми Enter для выхода..."
@@ -206,6 +206,28 @@ def opencode_tokens(event):
     return event.get("tokens") or part.get("tokens") or {}
 
 
+def clean_block(text):
+    lines = []
+    previous_empty = False
+    for line in str(text).strip().splitlines():
+        empty = not line.strip()
+        if empty and previous_empty:
+            continue
+        lines.append("" if empty else line)
+        previous_empty = empty
+    return "\n".join(lines)
+
+
+def add_opencode_event(event_log, header, content=""):
+    content = clean_block(content)
+    block = header if not content else f"{header}\n{content}"
+    event_log.append(block)
+
+    print(f"\n{header}")
+    if content:
+        print(content)
+
+
 def run_opencode_test(model, prompt, test_file):
     script_dir = Path(__file__).resolve().parent
     work_name = "_".join(
@@ -222,7 +244,9 @@ def run_opencode_test(model, prompt, test_file):
 
     start_time = time.perf_counter()
     first_token_time = None
-    full_response = ""
+    response_parts = []
+    event_log = []
+    step_count = 0
     prompt_tokens = 0
     output_tokens = 0
 
@@ -233,6 +257,7 @@ def run_opencode_test(model, prompt, test_file):
                 "run",
                 "--format",
                 "json",
+                "--thinking",
                 "--model",
                 model["full_name"],
                 prompt,
@@ -249,16 +274,42 @@ def run_opencode_test(model, prompt, test_file):
             if not line.strip():
                 continue
             event = json.loads(line)
-            if event.get("type") == "text":
-                text = opencode_text(event)
+            event_type = event.get("type")
+
+            if event_type == "step_start":
+                step_count += 1
+                add_opencode_event(event_log, f"[АГЕНТ] Шаг {step_count}")
+            elif event_type == "reasoning":
+                reasoning = opencode_text(event)
+                if reasoning:
+                    add_opencode_event(event_log, "[РАЗМЫШЛЕНИЕ]", reasoning)
+            elif event_type == "tool_use":
+                part = event.get("part") or {}
+                state = part.get("state") or {}
+                tool = part.get("tool", "неизвестный инструмент")
+                status = state.get("status", "неизвестно")
+                title = state.get("title", "")
+                add_opencode_event(
+                    event_log,
+                    f"[ИНСТРУМЕНТ] {tool} — {status}",
+                    title,
+                )
+            elif event_type == "text":
+                text = clean_block(opencode_text(event))
                 if text and first_token_time is None:
                     first_token_time = time.perf_counter()
-                full_response += text
-                print(text, end="", flush=True)
-            elif event.get("type") == "step_finish":
+                if text:
+                    response_parts.append(text)
+                    add_opencode_event(event_log, "[ОТВЕТ]", text)
+            elif event_type == "step_finish":
                 tokens = opencode_tokens(event)
                 prompt_tokens += tokens.get("input", 0) or 0
                 output_tokens += tokens.get("output", 0) or 0
+            elif event_type == "error":
+                error = event.get("error")
+                if not isinstance(error, str):
+                    error = json.dumps(error, ensure_ascii=False, indent=2)
+                add_opencode_event(event_log, "[ОШИБКА OPENCODE]", error)
 
         error_text = process.stderr.read().strip()
         return_code = process.wait()
@@ -270,6 +321,8 @@ def run_opencode_test(model, prompt, test_file):
     except Exception as error:
         result = make_error_result(model, error)
         result["agent_work_dir"] = relative_work_dir
+        result["agent_steps"] = step_count
+        result["event_log"] = "\n\n".join(event_log)
         return result
 
     end_time = time.perf_counter()
@@ -290,7 +343,9 @@ def run_opencode_test(model, prompt, test_file):
         "tokens_generated": output_tokens or None,
         "prompt_tokens": prompt_tokens or None,
         "load_seconds": None,
-        "response": full_response,
+        "response": "\n\n".join(response_parts),
+        "agent_steps": step_count,
+        "event_log": "\n\n".join(event_log),
         "agent_work_dir": relative_work_dir,
     }
 
@@ -312,6 +367,8 @@ def print_result(result):
     )
     print(f"Токенов в промпте: {format_count(result['prompt_tokens'])}")
     print(f"Сгенерировано токенов: {format_count(result['tokens_generated'])}")
+    if result["source"] == "opencode":
+        print(f"Шагов агента: {result['agent_steps']}")
     if result["location"] == "local":
         print(f"Загрузка модели: {format_number(result['load_seconds'])} сек")
 
@@ -360,12 +417,19 @@ def save_report(result, test_file, test_title, prompt):
             report.write(
                 f"Сгенерировано токенов: {format_count(result['tokens_generated'])}\n"
             )
+            if result["source"] == "opencode":
+                report.write(f"Шагов агента: {result['agent_steps']}\n")
             if result["location"] == "local":
                 report.write(
                     f"Загрузка модели: {format_number(result['load_seconds'])} сек\n"
                 )
-            report.write("\n")
-            report.write("ОТВЕТ:\n")
+
+        if result.get("event_log"):
+            report.write("\nХОД РАБОТЫ АГЕНТА:\n")
+            report.write(result["event_log"] + "\n")
+
+        if "error" not in result:
+            report.write("\nОТВЕТ МОДЕЛИ:\n")
             report.write(result["response"] + "\n")
 
     return report_path.name
