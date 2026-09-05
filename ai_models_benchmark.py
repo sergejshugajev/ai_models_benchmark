@@ -275,14 +275,15 @@ def run_opencode_test(model, prompt, test_file):
                 continue
             event = json.loads(line)
             event_type = event.get("type")
+            elapsed = int(time.perf_counter() - start_time)
 
             if event_type == "step_start":
                 step_count += 1
-                add_opencode_event(event_log, f"[АГЕНТ] Шаг {step_count}")
+                add_opencode_event(event_log, f"[{elapsed}][АГЕНТ] Шаг {step_count}")
             elif event_type == "reasoning":
                 reasoning = opencode_text(event)
                 if reasoning:
-                    add_opencode_event(event_log, "[РАЗМЫШЛЕНИЕ]", reasoning)
+                    add_opencode_event(event_log, f"[{elapsed}][РАЗМЫШЛЕНИЕ]", reasoning)
             elif event_type == "tool_use":
                 part = event.get("part") or {}
                 state = part.get("state") or {}
@@ -291,7 +292,7 @@ def run_opencode_test(model, prompt, test_file):
                 title = state.get("title") or ""
                 add_opencode_event(
                     event_log,
-                    f"[ИНСТРУМЕНТ] {tool} — {status}",
+                    f"[{elapsed}][ИНСТРУМЕНТ] {tool} — {status}",
                     title,
                 )
             elif event_type == "text":
@@ -300,7 +301,7 @@ def run_opencode_test(model, prompt, test_file):
                     first_token_time = time.perf_counter()
                 if text:
                     response_parts.append(text)
-                    add_opencode_event(event_log, "[ОТВЕТ]", text)
+                    add_opencode_event(event_log, f"[{elapsed}][ОТВЕТ]", text)
             elif event_type == "step_finish":
                 tokens = opencode_tokens(event)
                 prompt_tokens += tokens.get("input", 0) or 0
@@ -309,7 +310,7 @@ def run_opencode_test(model, prompt, test_file):
                 error = event.get("error")
                 if not isinstance(error, str):
                     error = json.dumps(error, ensure_ascii=False, indent=2)
-                add_opencode_event(event_log, "[ОШИБКА OPENCODE]", error)
+                add_opencode_event(event_log, f"[{elapsed}][ОШИБКА OPENCODE]", error)
 
         error_text = process.stderr.read().strip()
         return_code = process.wait()
