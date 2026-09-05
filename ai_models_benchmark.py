@@ -209,13 +209,13 @@ def opencode_tokens(event):
 def clean_block(text):
     lines = []
     previous_empty = False
-    for line in str(text).strip().splitlines():
+    for line in str(text).splitlines():
         empty = not line.strip()
         if empty and previous_empty:
             continue
         lines.append("" if empty else line)
         previous_empty = empty
-    return "\n".join(lines)
+    return "\n".join(lines).strip("\n")
 
 
 def add_opencode_event(event_log, header, content=""):
@@ -288,7 +288,7 @@ def run_opencode_test(model, prompt, test_file):
                 state = part.get("state") or {}
                 tool = part.get("tool", "неизвестный инструмент")
                 status = state.get("status", "неизвестно")
-                title = state.get("title", "")
+                title = state.get("title") or ""
                 add_opencode_event(
                     event_log,
                     f"[ИНСТРУМЕНТ] {tool} — {status}",
