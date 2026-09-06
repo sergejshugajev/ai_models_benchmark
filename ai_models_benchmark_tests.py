@@ -1,8 +1,49 @@
 import io
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 import ai_models_benchmark as benchmark
+
+
+class TerminalOutput(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class SpinnerTests(unittest.TestCase):
+    def test_write_preserves_streaming_output(self):
+        output = TerminalOutput()
+        with patch.object(benchmark.sys, "stdout", output):
+            spinner = benchmark.Spinner()
+            spinner.write("one", end="")
+            spinner.write(" two")
+            spinner.write("three")
+
+        self.assertEqual(output.getvalue(), "\r \rone two\n\r \rthree\n")
+        self.assertFalse(spinner.streaming)
+
+    def test_disabled_when_output_is_not_terminal(self):
+        output = io.StringIO()
+        with patch.object(benchmark.sys, "stdout", output):
+            spinner = benchmark.Spinner()
+            spinner.start()
+
+        self.assertFalse(spinner.enabled)
+        self.assertIsNone(spinner.thread)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_interrupted_input_adds_newline_and_reraises(self):
+        for error in (KeyboardInterrupt, EOFError):
+            with self.subTest(error=error.__name__):
+                output = TerminalOutput()
+                with patch.object(benchmark.sys, "stdout", output):
+                    spinner = benchmark.Spinner()
+                    with patch("builtins.input", side_effect=error):
+                        with self.assertRaises(error):
+                            spinner.input("Prompt: ")
+
+                self.assertEqual(output.getvalue(), "\r \r\n")
 
 
 class FormatNumberTests(unittest.TestCase):

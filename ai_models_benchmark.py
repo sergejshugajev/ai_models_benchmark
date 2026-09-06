@@ -1,16 +1,84 @@
+import itertools
 import json
 import shutil
 import subprocess
+import sys
+import threading
 import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "0.9d"
+VERSION = "0.9e"
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 EXIT_PROMPT = "\nНажми Enter для выхода..."
+SHOW_SPINNER = "--no-spinner" not in sys.argv
+SPINNER_FRAMES = "|/-\\"
+
+
+class Spinner:
+    def __init__(self, enabled=True):
+        self.enabled = enabled and sys.stdout.isatty()
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.streaming = False
+
+    def start(self):
+        if not self.enabled:
+            return
+        self.thread = threading.Thread(target=self.animate, daemon=True)
+        self.thread.start()
+
+    def animate(self):
+        for frame in itertools.cycle(SPINNER_FRAMES):
+            with self.lock:
+                if not self.streaming:
+                    sys.stdout.write(f"\r{frame}")
+                    sys.stdout.flush()
+            if self.stop_event.wait(0.15):
+                return
+
+    def write(self, text, end="\n"):
+        with self.lock:
+            if self.enabled and not self.streaming:
+                sys.stdout.write("\r \r")
+            sys.stdout.write(f"{text}{end}")
+            sys.stdout.flush()
+            self.streaming = not end.endswith("\n")
+
+    def input(self, prompt=""):
+        if not self.enabled:
+            return input(prompt)
+
+        with self.lock:
+            sys.stdout.write("\r \r")
+            sys.stdout.flush()
+
+            try:
+                return input(prompt)
+            except (KeyboardInterrupt, EOFError):
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                raise
+
+    def stop(self):
+        if not self.enabled:
+            return
+        self.stop_event.set()
+        self.thread.join()
+        with self.lock:
+            sys.stdout.write("\r \r")
+            sys.stdout.flush()
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop()
 
 
 def format_number(value):
@@ -33,11 +101,11 @@ def safe_filename(value):
     return value
 
 
-def choose_number(count, prompt):
-    choice = input(prompt).strip()
+def choose_number(count, prompt, spinner):
+    choice = spinner.input(prompt).strip()
     if choice.isdigit() and 1 <= int(choice) <= count:
         return int(choice) - 1
-    print("Неверный номер.")
+    spinner.write("Неверный номер.")
     return None
 
 
@@ -127,19 +195,19 @@ def get_running_ollama_models():
     return [line.split()[0] for line in lines]
 
 
-def prepare_ollama_model(selected_model):
+def prepare_ollama_model(selected_model, spinner):
     running_models = get_running_ollama_models()
     other_models = [model for model in running_models if model != selected_model]
 
     if selected_model in running_models:
-        print("\nВыбранная модель уже загружена в память.")
+        spinner.write("Выбранная модель уже загружена в память.\n")
 
     for model in other_models:
-        print(f"\nОстанавливаю другую модель: {model}")
+        spinner.write(f"Останавливаю другую модель: {model}\n")
         subprocess.run(["ollama", "stop", model], check=True)
 
 
-def run_ollama_test(model, prompt):
+def run_ollama_test(model, prompt, spinner):
     data = json.dumps(
         {"model": model["name"], "prompt": prompt, "stream": True}
     ).encode("utf-8")
@@ -164,7 +232,7 @@ def run_ollama_test(model, prompt):
                     if first_token_time is None:
                         first_token_time = time.perf_counter()
                     full_response += text
-                    print(text, end="", flush=True)
+                    spinner.write(text, end="")
                 if chunk.get("done"):
                     final_chunk = chunk
     except Exception as error:
@@ -218,17 +286,19 @@ def clean_block(text):
     return "\n".join(lines).strip("\n")
 
 
-def add_opencode_event(event_log, header, content=""):
+def add_opencode_event(event_log, header, content="", spinner=None):
     content = clean_block(content)
     block = header if not content else f"{header}\n{content}"
     event_log.append(block)
 
-    print(f"\n{header}")
-    if content:
-        print(content)
+    output = f"\n{header}" if not content else f"\n{header}\n{content}"
+    if spinner:
+        spinner.write(output)
+    else:
+        print(output)
 
 
-def run_opencode_test(model, prompt, test_file):
+def run_opencode_test(model, prompt, test_file, spinner):
     script_dir = Path(__file__).resolve().parent
     work_name = "_".join(
         [
@@ -240,7 +310,7 @@ def run_opencode_test(model, prompt, test_file):
     agent_work_dir = script_dir / ".agent_work" / work_name
     agent_work_dir.mkdir(parents=True, exist_ok=True)
     relative_work_dir = str(agent_work_dir.relative_to(script_dir))
-    print(f"Рабочая папка агента: {relative_work_dir}\n")
+    spinner.write(f"Рабочая папка агента: {relative_work_dir}\n")
 
     start_time = time.perf_counter()
     first_token_time = None
@@ -279,11 +349,18 @@ def run_opencode_test(model, prompt, test_file):
 
             if event_type == "step_start":
                 step_count += 1
-                add_opencode_event(event_log, f"[{elapsed}][АГЕНТ] Шаг {step_count}")
+                add_opencode_event(
+                    event_log, f"[{elapsed}][АГЕНТ] Шаг {step_count}", spinner=spinner
+                )
             elif event_type == "reasoning":
                 reasoning = opencode_text(event)
                 if reasoning:
-                    add_opencode_event(event_log, f"[{elapsed}][РАЗМЫШЛЕНИЕ]", reasoning)
+                    add_opencode_event(
+                        event_log,
+                        f"[{elapsed}][РАЗМЫШЛЕНИЕ]",
+                        reasoning,
+                        spinner,
+                    )
             elif event_type == "tool_use":
                 part = event.get("part") or {}
                 state = part.get("state") or {}
@@ -294,6 +371,7 @@ def run_opencode_test(model, prompt, test_file):
                     event_log,
                     f"[{elapsed}][ИНСТРУМЕНТ] {tool} — {status}",
                     title,
+                    spinner,
                 )
             elif event_type == "text":
                 text = clean_block(opencode_text(event))
@@ -301,7 +379,9 @@ def run_opencode_test(model, prompt, test_file):
                     first_token_time = time.perf_counter()
                 if text:
                     response_parts.append(text)
-                    add_opencode_event(event_log, f"[{elapsed}][ОТВЕТ]", text)
+                    add_opencode_event(
+                        event_log, f"[{elapsed}][ОТВЕТ]", text, spinner
+                    )
             elif event_type == "step_finish":
                 tokens = opencode_tokens(event)
                 prompt_tokens += tokens.get("input", 0) or 0
@@ -310,7 +390,9 @@ def run_opencode_test(model, prompt, test_file):
                 error = event.get("error")
                 if not isinstance(error, str):
                     error = json.dumps(error, ensure_ascii=False, indent=2)
-                add_opencode_event(event_log, f"[{elapsed}][ОШИБКА OPENCODE]", error)
+                add_opencode_event(
+                    event_log, f"[{elapsed}][ОШИБКА OPENCODE]", error, spinner
+                )
 
         error_text = process.stderr.read().strip()
         return_code = process.wait()
@@ -355,23 +437,23 @@ def make_error_result(model, error):
     return {**model, "error": str(error)}
 
 
-def print_result(result):
-    print("\n\nТЕСТ ЗАВЕРШЁН")
+def print_result(result, spinner):
+    spinner.write("\n\nТЕСТ ЗАВЕРШЁН")
     if "error" in result:
-        print("ОШИБКА:", result["error"])
+        spinner.write(f"ОШИБКА: {result['error']}")
         return
 
-    print(f"До первого токена: {format_number(result['first_token_seconds'])}")
-    print(f"Полное время: {format_number(result['total_seconds'])} сек")
-    print(
+    spinner.write(f"До первого токена: {format_number(result['first_token_seconds'])}")
+    spinner.write(f"Полное время: {format_number(result['total_seconds'])} сек")
+    spinner.write(
         f"Скорость генерации: {format_number(result['tokens_per_second'])} токен/сек"
     )
-    print(f"Токенов в промпте: {format_count(result['prompt_tokens'])}")
-    print(f"Сгенерировано токенов: {format_count(result['tokens_generated'])}")
+    spinner.write(f"Токенов в промпте: {format_count(result['prompt_tokens'])}")
+    spinner.write(f"Сгенерировано токенов: {format_count(result['tokens_generated'])}")
     if result["source"] == "opencode":
-        print(f"Шагов агента: {result['agent_steps']}")
+        spinner.write(f"Шагов агента: {result['agent_steps']}")
     if result["location"] == "local":
-        print(f"Загрузка модели: {format_number(result['load_seconds'])} сек")
+        spinner.write(f"Загрузка модели: {format_number(result['load_seconds'])} сек")
 
 
 def save_report(result, test_file, test_title, prompt):
@@ -440,20 +522,20 @@ def save_report(result, test_file, test_title, prompt):
     return report_path.name
 
 
-def main():
-    print(f"AI MODELS BENCHMARK v{VERSION}")
-    print("=" * 60)
-    print("Поиск доступных моделей...\n")
+def run(spinner):
+    spinner.write(f"AI MODELS BENCHMARK v{VERSION}")
+    spinner.write("=" * 60)
+    spinner.write("Поиск доступных моделей...\n")
 
     ollama_found, ollama_models = get_ollama_models()
     opencode_found, opencode_models = get_opencode_models()
 
-    print(
+    spinner.write(
         f"Ollama    - {len(ollama_models)} моделей"
         if ollama_found
         else "Ollama    - не обнаружена (нужен запущенный Ollama)"
     )
-    print(
+    spinner.write(
         f"OpenCode  - {len(opencode_models)} моделей"
         if opencode_found
         else "OpenCode  - не обнаружен (нужен OpenCode CLI, команда 'opencode')"
@@ -461,55 +543,60 @@ def main():
 
     models = ollama_models + opencode_models
     if not models:
-        print("\nДоступные модели не найдены.")
+        spinner.write("\nДоступные модели не найдены.")
         return
 
-    print("\nДоступные модели:\n")
+    spinner.write("\nДоступные модели:\n")
     for number, model in enumerate(models, start=1):
         location_label = "локально" if model["location"] == "local" else "облако"
         source_label = source_name(model["source"])
         label = f"{source_label} — {model['name']} ({location_label})"
-        print(f"{number} - {label}")
+        spinner.write(f"{number} - {label}")
 
-    model_index = choose_number(len(models), "\nВыбери номер модели: ")
+    model_index = choose_number(len(models), "\nВыбери номер модели: ", spinner)
     if model_index is None:
         return
     model = models[model_index]
 
     tests = get_tests()
     if not tests:
-        print("\nТестовые файлы [0-9][0-9]_*.md не найдены.")
+        spinner.write("\nТестовые файлы [0-9][0-9]_*.md не найдены.")
         return
 
-    print("\nДоступные тесты:\n")
+    spinner.write("\nДоступные тесты:\n")
     for number, (_, title, _) in enumerate(tests, start=1):
-        print(f"{number} - {title}")
+        spinner.write(f"{number} - {title}")
 
-    test_index = choose_number(len(tests), "\nВыбери номер теста: ")
+    test_index = choose_number(len(tests), "\nВыбери номер теста: ", spinner)
     if test_index is None:
         return
     test_file, test_title, prompt = tests[test_index]
 
     location_label = "локально" if model["location"] == "local" else "облако"
-    print(f"\nИсточник: {source_name(model['source'])} ({location_label})")
-    print(f"Модель: {model['name']}")
-    print(f"Тест: {test_title}\n")
+    spinner.write(f"\nИсточник: {source_name(model['source'])} ({location_label})")
+    spinner.write(f"Модель: {model['name']}")
+    spinner.write(f"Тест: {test_title}\n")
 
     if model["source"] == "ollama":
-        prepare_ollama_model(model["name"])
-        result = run_ollama_test(model, prompt)
+        prepare_ollama_model(model["name"], spinner)
+        result = run_ollama_test(model, prompt, spinner)
     else:
-        result = run_opencode_test(model, prompt, test_file)
+        result = run_opencode_test(model, prompt, test_file, spinner)
 
-    print_result(result)
+    print_result(result, spinner)
     report_name = save_report(result, test_file, test_title, prompt)
-    print(f"\nОтчёт сохранён: {report_name}")
+    spinner.write(f"\nОтчёт сохранён: {report_name}")
+
+
+def main():
+    with Spinner(SHOW_SPINNER) as spinner:
+        try:
+            run(spinner)
+        except Exception as error:
+            spinner.write(f"\nОШИБКА: {error}")
+        finally:
+            spinner.input(EXIT_PROMPT)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as error:
-        print(f"\nОШИБКА: {error}")
-    finally:
-        input(EXIT_PROMPT)
+    main()
