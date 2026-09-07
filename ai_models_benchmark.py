@@ -309,8 +309,13 @@ def run_opencode_test(model, prompt, test_file, spinner):
     )
     agent_work_dir = script_dir / ".agent_work" / work_name
     agent_work_dir.mkdir(parents=True, exist_ok=True)
+    for file_name in ("BENCHMARK_PRIVATE_NOTES.md", "PASSWORDS.txt"):
+        source_file = script_dir / file_name
+        destination_file = agent_work_dir.parent / file_name
+        if source_file.is_file() and not destination_file.exists():
+            shutil.copy2(source_file, destination_file)
     relative_work_dir = str(agent_work_dir.relative_to(script_dir))
-    spinner.write(f"Рабочая папка агента: {relative_work_dir}\n")
+    spinner.write(f"Рабочая папка агента: {relative_work_dir}")
 
     start_time = time.perf_counter()
     first_token_time = None
