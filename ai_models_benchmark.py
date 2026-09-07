@@ -101,8 +101,8 @@ def safe_filename(value):
     return value
 
 
-def choose_number(count, prompt, spinner):
-    choice = spinner.input(prompt).strip()
+def choose_number(count, choice, spinner):
+    choice = choice.strip()
     if choice.isdigit() and 1 <= int(choice) <= count:
         return int(choice) - 1
     spinner.write("Неверный номер.")
@@ -200,10 +200,10 @@ def prepare_ollama_model(selected_model, spinner):
     other_models = [model for model in running_models if model != selected_model]
 
     if selected_model in running_models:
-        spinner.write("Выбранная модель уже загружена в память.\n")
+        spinner.write("Выбранная модель уже загружена в память.")
 
     for model in other_models:
-        spinner.write(f"Останавливаю другую модель: {model}\n")
+        spinner.write(f"Останавливаю другую модель: {model}")
         subprocess.run(["ollama", "stop", model], check=True)
 
 
@@ -558,7 +558,9 @@ def run(spinner):
         label = f"{source_label} — {model['name']} ({location_label})"
         spinner.write(f"{number} - {label}")
 
-    model_index = choose_number(len(models), "\nВыбери номер модели: ", spinner)
+    model_index = choose_number(
+        len(models), spinner.input("\nВыбери номер модели: "), spinner
+    )
     if model_index is None:
         return
     model = models[model_index]
@@ -572,25 +574,43 @@ def run(spinner):
     for number, (_, title, _) in enumerate(tests, start=1):
         spinner.write(f"{number} - {title}")
 
-    test_index = choose_number(len(tests), "\nВыбери номер теста: ", spinner)
-    if test_index is None:
-        return
-    test_file, test_title, prompt = tests[test_index]
+    choice = spinner.input(
+        "\nВыбери номер теста или X для запуска всех тестов: "
+    ).strip()
+    if choice.lower() == "x":
+        selected_tests = tests
+    else:
+        test_index = choose_number(len(tests), choice, spinner)
+        if test_index is None:
+            return
+        selected_tests = [tests[test_index]]
 
     location_label = "локально" if model["location"] == "local" else "облако"
     spinner.write(f"\nИсточник: {source_name(model['source'])} ({location_label})")
     spinner.write(f"Модель: {model['name']}")
-    spinner.write(f"Тест: {test_title}\n")
 
     if model["source"] == "ollama":
         prepare_ollama_model(model["name"], spinner)
-        result = run_ollama_test(model, prompt, spinner)
-    else:
-        result = run_opencode_test(model, prompt, test_file, spinner)
 
-    print_result(result, spinner)
-    report_name = save_report(result, test_file, test_title, prompt)
-    spinner.write(f"\nОтчёт сохранён: {report_name}")
+    completed_tests = 0
+    try:
+        for test_file, test_title, prompt in selected_tests:
+            spinner.write(f"\nТест: {test_title}\n")
+
+            if model["source"] == "ollama":
+                result = run_ollama_test(model, prompt, spinner)
+            else:
+                result = run_opencode_test(model, prompt, test_file, spinner)
+
+            print_result(result, spinner)
+            report_name = save_report(result, test_file, test_title, prompt)
+            spinner.write(f"\nОтчёт сохранён: {report_name}")
+            completed_tests += 1
+    except KeyboardInterrupt:
+        spinner.write("\nВыполнение остановлено пользователем.")
+
+    spinner.write(f"\nМодель: {model['name']}")
+    spinner.write(f"Пройдено тестов: {completed_tests}")
 
 
 def main():

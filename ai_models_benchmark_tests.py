@@ -1,7 +1,7 @@
 import io
 import unittest
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import ai_models_benchmark as benchmark
 
@@ -44,6 +44,68 @@ class SpinnerTests(unittest.TestCase):
                             spinner.input("Prompt: ")
 
                 self.assertEqual(output.getvalue(), "\r \r\n")
+
+
+class RunTests(unittest.TestCase):
+    def run_with_test_choice(self, choice, run_side_effect=None):
+        spinner = Mock()
+        spinner.input.side_effect = ["1", choice]
+        model = {
+            "source": "ollama",
+            "provider": "ollama",
+            "name": "test-model",
+            "full_name": "test-model",
+            "location": "local",
+        }
+        tests = [
+            ("01_test.md", "Первый тест", "prompt 1"),
+            ("02_test.md", "Второй тест", "prompt 2"),
+        ]
+        result = object()
+
+        with (
+            patch.object(benchmark, "get_ollama_models", return_value=(True, [model])),
+            patch.object(benchmark, "get_opencode_models", return_value=(False, [])),
+            patch.object(benchmark, "get_tests", return_value=tests),
+            patch.object(benchmark, "prepare_ollama_model") as prepare_model,
+            patch.object(benchmark, "run_ollama_test", return_value=result) as run_test,
+            patch.object(benchmark, "print_result"),
+            patch.object(benchmark, "save_report", return_value="report.txt") as save_report,
+        ):
+            if run_side_effect is not None:
+                run_test.side_effect = run_side_effect
+            benchmark.run(spinner)
+
+        return spinner, model, tests, prepare_model, run_test, save_report
+
+    def test_x_runs_every_test_with_separate_report(self):
+        spinner, model, tests, prepare_model, run_test, save_report = (
+            self.run_with_test_choice("X")
+        )
+
+        prepare_model.assert_called_once_with(model["name"], spinner)
+        self.assertEqual(run_test.call_count, len(tests))
+        self.assertEqual(save_report.call_count, len(tests))
+        spinner.write.assert_any_call("Пройдено тестов: 2")
+
+    def test_number_runs_only_selected_test(self):
+        spinner, model, tests, _, run_test, save_report = self.run_with_test_choice("2")
+
+        run_test.assert_called_once_with(model, tests[1][2], spinner)
+        save_report.assert_called_once_with(
+            run_test.return_value, tests[1][0], tests[1][1], tests[1][2]
+        )
+        spinner.write.assert_any_call("Пройдено тестов: 1")
+
+    def test_interruption_stops_batch_and_shows_completed_count(self):
+        spinner, _, _, _, run_test, save_report = self.run_with_test_choice(
+            "X", [object(), KeyboardInterrupt]
+        )
+
+        self.assertEqual(run_test.call_count, 2)
+        save_report.assert_called_once()
+        spinner.write.assert_any_call("\nВыполнение остановлено пользователем.")
+        spinner.write.assert_any_call("Пройдено тестов: 1")
 
 
 class FormatNumberTests(unittest.TestCase):
