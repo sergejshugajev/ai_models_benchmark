@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "0.9f"
+VERSION = "0.9g"
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 EXIT_PROMPT = "\nНажми Enter для выхода..."
@@ -450,8 +450,6 @@ def run_opencode_test(model, prompt, test_file, spinner):
         if not any(agent_work_dir.iterdir()):
             agent_work_dir.rmdir()
             relative_work_dir = None
-        if return_code:
-            raise RuntimeError(error_text or f"OpenCode завершился с кодом {return_code}")
     except Exception as error:
         result = make_error_result(model, error)
         result["agent_work_dir"] = relative_work_dir
@@ -461,7 +459,7 @@ def run_opencode_test(model, prompt, test_file, spinner):
 
     end_time = time.perf_counter()
     total_seconds = end_time - start_time
-    return {
+    result = {
         **model,
         "first_token_seconds": (
             first_text_time - start_time if first_text_time is not None else None
@@ -480,6 +478,9 @@ def run_opencode_test(model, prompt, test_file, spinner):
         "agent_work_dir": relative_work_dir,
         "json_event_log": "\n".join(json_events),
     }
+    if return_code:
+        result["error"] = error_text or f"OpenCode завершился с кодом {return_code}"
+    return result
 
 
 def make_error_result(model, error):
@@ -488,12 +489,10 @@ def make_error_result(model, error):
 
 def print_result(result, spinner):
     spinner.write("\n\nТЕСТ ЗАВЕРШЁН")
-    if "error" in result:
-        spinner.write(f"ОШИБКА: {result['error']}")
-        return
-
     for line in metric_lines(result):
         spinner.write(line)
+    if "error" in result:
+        spinner.write(f"ОШИБКА: {result['error']}")
 
 
 def save_report(result, test_file, test_title, prompt):
