@@ -47,9 +47,9 @@ class SpinnerTests(unittest.TestCase):
 
 
 class RunTests(unittest.TestCase):
-    def run_with_test_choice(self, choice, run_side_effect=None):
+    def run_with_test_choice(self, choice, run_side_effect=None, input_values=None):
         spinner = Mock()
-        spinner.input.side_effect = ["1", choice]
+        spinner.input.side_effect = input_values or ["1", choice]
         model = {
             "source": "ollama",
             "provider": "ollama",
@@ -107,6 +107,15 @@ class RunTests(unittest.TestCase):
         spinner.write.assert_any_call("\nВыполнение остановлено пользователем.")
         spinner.write.assert_any_call("Пройдено тестов: 1")
 
+    def test_zero_returns_from_tests_to_model_selection(self):
+        spinner, _, _, _, run_test, save_report = self.run_with_test_choice(
+            "1", input_values=["1", "0", "1", "1"]
+        )
+
+        self.assertEqual(spinner.input.call_count, 4)
+        run_test.assert_called_once()
+        save_report.assert_called_once()
+
 
 class FormatNumberTests(unittest.TestCase):
     def test_none_returns_unavailable(self):
@@ -151,8 +160,13 @@ class FormatListNumberTests(unittest.TestCase):
 class ChooseNumberTests(unittest.TestCase):
     def test_accepts_leading_zero(self):
         spinner = Mock()
+        cases = [("01", 0), ("00001", 0), ("005", 4)]
 
-        self.assertEqual(benchmark.choose_number(12, "01", spinner), 0)
+        for choice, expected in cases:
+            with self.subTest(choice=choice):
+                self.assertEqual(
+                    benchmark.choose_number(5, choice, spinner), expected
+                )
         spinner.write.assert_not_called()
 
 

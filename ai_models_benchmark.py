@@ -555,43 +555,52 @@ def run(spinner):
         spinner.write("\nДоступные модели не найдены.")
         return
 
-    spinner.write("\nДоступные модели:\n")
-    for number, model in enumerate(models, start=1):
-        location_label = "локально" if model["location"] == "local" else "облако"
-        source_label = source_name(model["source"])
-        label = f"{source_label} — {model['name']} ({location_label})"
-        spinner.write(f"{format_list_number(number, len(models))} - {label}")
-
-    model_index = choose_number(
-        len(models), spinner.input("\nВыбери номер модели: "), spinner
-    )
-    if model_index is None:
-        return
-    model = models[model_index]
-
     tests = get_tests()
     if not tests:
         spinner.write("\nТестовые файлы [0-9][0-9]_*.md не найдены.")
         return
 
-    spinner.write("\nДоступные тесты:\n")
-    for number, (_, title, _) in enumerate(tests, start=1):
-        spinner.write(f"{format_list_number(number, len(tests))} - {title}")
+    while True:
+        spinner.write("\nДоступные модели:\n")
+        for number, model in enumerate(models, start=1):
+            location_label = (
+                "локально" if model["location"] == "local" else "облако"
+            )
+            source_label = source_name(model["source"])
+            label = f"{source_label} — {model['name']} ({location_label})"
+            spinner.write(f"{format_list_number(number, len(models))} - {label}")
 
-    choice = spinner.input(
-        "\nВыбери номер теста или X для запуска всех тестов: "
-    ).strip()
-    if choice.lower() == "x":
-        selected_tests = tests
-    else:
-        test_index = choose_number(len(tests), choice, spinner)
-        if test_index is None:
+        model_index = choose_number(
+            len(models), spinner.input("\nВыбери номер модели: "), spinner
+        )
+        if model_index is None:
             return
-        selected_tests = [tests[test_index]]
+        model = models[model_index]
 
-    location_label = "локально" if model["location"] == "local" else "облако"
-    spinner.write(f"\nИсточник: {source_name(model['source'])} ({location_label})")
-    spinner.write(f"Модель: {model['name']}")
+        location_label = "локально" if model["location"] == "local" else "облако"
+        spinner.write(
+            f"\nВыбранная модель: {source_name(model['source'])} — "
+            f"{model['name']} ({location_label})"
+        )
+
+        spinner.write("\nДоступные тесты:\n")
+        for number, (_, title, _) in enumerate(tests, start=1):
+            spinner.write(f"{format_list_number(number, len(tests))} - {title}")
+
+        choice = spinner.input(
+            "\nВыбери номер теста, X — все тесты, 0 — назад: "
+        ).strip()
+        if choice == "0":
+            continue
+        if choice.lower() == "x":
+            selected_tests = tests
+        else:
+            test_index = choose_number(len(tests), choice, spinner)
+            if test_index is None:
+                return
+            selected_tests = [tests[test_index]]
+
+        break
 
     if model["source"] == "ollama":
         prepare_ollama_model(model["name"], spinner)
