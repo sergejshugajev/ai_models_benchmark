@@ -144,6 +144,50 @@ class FormatCountTests(unittest.TestCase):
                 self.assertEqual(benchmark.format_count(value), expected)
 
 
+class CalculateRateTests(unittest.TestCase):
+    def test_calculates_rate(self):
+        self.assertEqual(benchmark.calculate_rate(120, 4), 30)
+
+    def test_unavailable_without_count_or_time(self):
+        for count, seconds in [(None, 1), (1, None), (0, 1), (1, 0)]:
+            with self.subTest(count=count, seconds=seconds):
+                self.assertIsNone(benchmark.calculate_rate(count, seconds))
+
+
+class PrintResultTests(unittest.TestCase):
+    def test_opencode_uses_agent_metric_labels(self):
+        spinner = Mock()
+        result = {
+            "source": "opencode", "location": "cloud",
+            "first_token_seconds": 2, "total_seconds": 10,
+            "tokens_per_second": 5, "prompt_tokens": 20,
+            "tokens_generated": 50, "reasoning_tokens": 3,
+            "cache_read_tokens": 40, "total_tokens": 113,
+            "agent_steps": 2,
+        }
+
+        benchmark.print_result(result, spinner)
+
+        spinner.write.assert_any_call("До первого текста: 2.00 сек")
+        spinner.write.assert_any_call("Средняя скорость выхода: 5.00 токен/сек")
+        spinner.write.assert_any_call("Входных токенов без кэша: 20")
+
+    def test_ollama_keeps_generation_metric_labels(self):
+        spinner = Mock()
+        result = {
+            "source": "ollama", "location": "local",
+            "first_token_seconds": 2, "total_seconds": 10,
+            "tokens_per_second": 5, "prompt_tokens": 20,
+            "tokens_generated": 50, "load_seconds": 1,
+        }
+
+        benchmark.print_result(result, spinner)
+
+        spinner.write.assert_any_call("До первого токена: 2.00 сек")
+        spinner.write.assert_any_call("Скорость генерации: 5.00 токен/сек")
+        spinner.write.assert_any_call("Токенов в промпте: 20")
+
+
 class FormatListNumberTests(unittest.TestCase):
     def test_keeps_plain_numbers_for_short_list(self):
         self.assertEqual(benchmark.format_list_number(1, 9), "1")
