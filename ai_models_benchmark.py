@@ -96,6 +96,34 @@ def calculate_rate(count, seconds):
     return count / seconds if count and seconds else None
 
 
+def metric_lines(result):
+    opencode = result["source"] == "opencode"
+    lines = [
+        f"{'До первого текста' if opencode else 'До первого токена'}: "
+        f"{format_number(result.get('first_token_seconds'))} сек",
+        f"Полное время: {format_number(result.get('total_seconds'))} сек",
+        f"{'Эффективная скорость агента' if opencode else 'Скорость генерации'}: "
+        f"{format_number(result.get('tokens_per_second'))} токен/сек",
+        f"{'Входных токенов без кэша' if opencode else 'Токенов в промпте'}: "
+        f"{format_count(result.get('prompt_tokens'))}",
+        f"Сгенерировано токенов: {format_count(result.get('tokens_generated'))}",
+    ]
+    if opencode:
+        lines.extend(
+            [
+                f"Токенов размышления: {format_count(result.get('reasoning_tokens'))}",
+                f"Токенов из кэша: {format_count(result.get('cache_read_tokens'))}",
+                f"Всего токенов: {format_count(result.get('total_tokens'))}",
+                f"Шагов агента: {format_count(result.get('agent_steps'))}",
+            ]
+        )
+    if result["location"] == "local":
+        lines.append(
+            f"Загрузка модели: {format_number(result.get('load_seconds'))} сек"
+        )
+    return lines
+
+
 def format_list_number(number, count):
     return f"{number:0{len(str(count))}d}"
 
@@ -326,7 +354,7 @@ def run_opencode_test(model, prompt, test_file, spinner):
     spinner.write(f"Рабочая папка агента: {relative_work_dir}")
 
     start_time = time.perf_counter()
-    first_token_time = None
+    first_text_time = None
     response_parts = []
     event_log = []
     json_events = []
@@ -394,8 +422,8 @@ def run_opencode_test(model, prompt, test_file, spinner):
                 )
             elif event_type == "text":
                 text = clean_block(opencode_text(event))
-                if text and first_token_time is None:
-                    first_token_time = time.perf_counter()
+                if text and first_text_time is None:
+                    first_text_time = time.perf_counter()
                 if text:
                     response_parts.append(text)
                     add_opencode_event(
@@ -436,7 +464,7 @@ def run_opencode_test(model, prompt, test_file, spinner):
     return {
         **model,
         "first_token_seconds": (
-            first_token_time - start_time if first_token_time is not None else None
+            first_text_time - start_time if first_text_time is not None else None
         ),
         "total_seconds": total_seconds,
         "tokens_per_second": calculate_rate(output_tokens, total_seconds),
@@ -464,37 +492,8 @@ def print_result(result, spinner):
         spinner.write(f"ОШИБКА: {result['error']}")
         return
 
-    first_token_label = (
-        "До первого текста" if result["source"] == "opencode" else "До первого токена"
-    )
-    spinner.write(
-        f"{first_token_label}: {format_number(result['first_token_seconds'])} сек"
-    )
-    spinner.write(f"Полное время: {format_number(result['total_seconds'])} сек")
-    speed_label = (
-        "Средняя скорость выхода"
-        if result["source"] == "opencode"
-        else "Скорость генерации"
-    )
-    spinner.write(
-        f"{speed_label}: {format_number(result['tokens_per_second'])} токен/сек"
-    )
-    prompt_label = (
-        "Входных токенов без кэша"
-        if result["source"] == "opencode"
-        else "Токенов в промпте"
-    )
-    spinner.write(f"{prompt_label}: {format_count(result['prompt_tokens'])}")
-    spinner.write(f"Сгенерировано токенов: {format_count(result['tokens_generated'])}")
-    if result["source"] == "opencode":
-        spinner.write(
-            f"Токенов размышления: {format_count(result['reasoning_tokens'])}"
-        )
-        spinner.write(f"Токенов из кэша: {format_count(result['cache_read_tokens'])}")
-        spinner.write(f"Всего токенов: {format_count(result['total_tokens'])}")
-        spinner.write(f"Шагов агента: {result['agent_steps']}")
-    if result["location"] == "local":
-        spinner.write(f"Загрузка модели: {format_number(result['load_seconds'])} сек")
+    for line in metric_lines(result):
+        spinner.write(line)
 
 
 def save_report(result, test_file, test_title, prompt):
@@ -521,57 +520,7 @@ def save_report(result, test_file, test_title, prompt):
         report.write(f"Файл теста: {test_file.name}\n")
 
         report.write("\n# МЕТРИКИ:\n")
-        first_token_label = (
-            "До первого текста"
-            if result["source"] == "opencode"
-            else "До первого токена"
-        )
-        report.write(
-            f"{first_token_label}: "
-            f"{format_number(result.get('first_token_seconds'))} сек\n"
-        )
-        report.write(
-            f"Полное время: {format_number(result.get('total_seconds'))} сек\n"
-        )
-        speed_label = (
-            "Средняя скорость выхода"
-            if result["source"] == "opencode"
-            else "Скорость генерации"
-        )
-        report.write(
-            f"{speed_label}: "
-            f"{format_number(result.get('tokens_per_second'))} токен/сек\n"
-        )
-        prompt_label = (
-            "Входных токенов без кэша"
-            if result["source"] == "opencode"
-            else "Токенов в промпте"
-        )
-        report.write(
-            f"{prompt_label}: {format_count(result.get('prompt_tokens'))}\n"
-        )
-        report.write(
-            f"Сгенерировано токенов: {format_count(result.get('tokens_generated'))}\n"
-        )
-        if result["source"] == "opencode":
-            report.write(
-                "Токенов размышления: "
-                f"{format_count(result.get('reasoning_tokens'))}\n"
-            )
-            report.write(
-                "Токенов из кэша: "
-                f"{format_count(result.get('cache_read_tokens'))}\n"
-            )
-            report.write(
-                f"Всего токенов: {format_count(result.get('total_tokens'))}\n"
-            )
-            report.write(
-                f"Шагов агента: {format_count(result.get('agent_steps'))}\n"
-            )
-        if result["location"] == "local":
-            report.write(
-                f"Загрузка модели: {format_number(result.get('load_seconds'))} сек\n"
-            )
+        report.write("\n".join(metric_lines(result)) + "\n")
 
         if "error" in result:
             report.write(f"\n# ОШИБКА:\n{result['error']}\n")

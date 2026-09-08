@@ -169,7 +169,9 @@ class PrintResultTests(unittest.TestCase):
         benchmark.print_result(result, spinner)
 
         spinner.write.assert_any_call("До первого текста: 2.00 сек")
-        spinner.write.assert_any_call("Средняя скорость выхода: 5.00 токен/сек")
+        spinner.write.assert_any_call(
+            "Эффективная скорость агента: 5.00 токен/сек"
+        )
         spinner.write.assert_any_call("Входных токенов без кэша: 20")
 
     def test_ollama_keeps_generation_metric_labels(self):
