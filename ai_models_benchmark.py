@@ -91,6 +91,10 @@ def format_count(value):
     return "недоступно" if value is None else str(value)
 
 
+def format_list_number(number, count):
+    return f"{number:0{len(str(count))}d}"
+
+
 def source_name(source):
     return "OpenCode" if source == "opencode" else "Ollama"
 
@@ -556,7 +560,7 @@ def run(spinner):
         location_label = "локально" if model["location"] == "local" else "облако"
         source_label = source_name(model["source"])
         label = f"{source_label} — {model['name']} ({location_label})"
-        spinner.write(f"{number} - {label}")
+        spinner.write(f"{format_list_number(number, len(models))} - {label}")
 
     model_index = choose_number(
         len(models), spinner.input("\nВыбери номер модели: "), spinner
@@ -572,7 +576,7 @@ def run(spinner):
 
     spinner.write("\nДоступные тесты:\n")
     for number, (_, title, _) in enumerate(tests, start=1):
-        spinner.write(f"{number} - {title}")
+        spinner.write(f"{format_list_number(number, len(tests))} - {title}")
 
     choice = spinner.input(
         "\nВыбери номер теста или X для запуска всех тестов: "

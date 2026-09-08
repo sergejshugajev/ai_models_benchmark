@@ -135,6 +135,27 @@ class FormatCountTests(unittest.TestCase):
                 self.assertEqual(benchmark.format_count(value), expected)
 
 
+class FormatListNumberTests(unittest.TestCase):
+    def test_keeps_plain_numbers_for_short_list(self):
+        self.assertEqual(benchmark.format_list_number(1, 9), "1")
+
+    def test_pads_numbers_for_long_list(self):
+        cases = [(1, 10, "01"), (10, 10, "10"), (1, 100, "001")]
+        for number, count, expected in cases:
+            with self.subTest(number=number, count=count):
+                self.assertEqual(
+                    benchmark.format_list_number(number, count), expected
+                )
+
+
+class ChooseNumberTests(unittest.TestCase):
+    def test_accepts_leading_zero(self):
+        spinner = Mock()
+
+        self.assertEqual(benchmark.choose_number(12, "01", spinner), 0)
+        spinner.write.assert_not_called()
+
+
 class SourceNameTests(unittest.TestCase):
     def test_opencode(self):
         self.assertEqual(benchmark.source_name("opencode"), "OpenCode")
