@@ -14,12 +14,49 @@ VERSION = "0.9h"
 PROGRAM_DIR = Path(
     sys.executable if getattr(sys, "frozen", False) else __file__
 ).resolve().parent
-OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
-OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 EXIT_PROMPT = "\nНажми Enter для выхода..."
 SHOW_SPINNER = "--no-spinner" not in sys.argv
 SPINNER_FRAMES = "|/-\\"
-SAVE_OPENCODE_JSON_LOG = "--opencode-json-log" in sys.argv
+SAVE_AGENT_JSON_LOG = "--opencode-json-log" in sys.argv
+
+PROVIDERS = {
+    "ollama": {
+        "title": "Ollama",
+        "location": "local",
+        "location_title": "локально",
+        "protocol": "ollama_api",
+        "models_url": "http://localhost:11434/api/tags",
+        "generate_url": "http://localhost:11434/api/generate",
+        "running_command": ["ollama", "ps"],
+        "stop_command": ["ollama", "stop"],
+        "unavailable": "не обнаружена (нужен запущенный Ollama)",
+    },
+    "opencode": {
+        "title": "OpenCode",
+        "location": "cloud",
+        "location_title": "облако",
+        "protocol": "opencode_cli",
+        "executable": "opencode",
+        "models_command": ["opencode", "models"],
+        "run_command": ["opencode", "run", "--format", "json", "--thinking"],
+        "unavailable": "не обнаружен (нужен OpenCode CLI, команда 'opencode')",
+    },
+}
+
+PROTOCOLS = {
+    "ollama_api": {
+        "get_models": lambda *args: get_ollama_api_models(*args),
+        "prepare": lambda *args: prepare_local_model(*args),
+        "run": lambda *args: run_ollama_api_test(*args),
+        "metrics": "generation",
+    },
+    "opencode_cli": {
+        "get_models": lambda *args: get_opencode_cli_models(*args),
+        "prepare": None,
+        "run": lambda *args: run_opencode_cli_test(*args),
+        "metrics": "agent",
+    },
+}
 
 
 class Spinner:
@@ -100,18 +137,20 @@ def calculate_rate(count, seconds):
 
 
 def metric_lines(result):
-    opencode = result["source"] == "opencode"
+    provider = PROVIDERS[result["source"]]
+    protocol = PROTOCOLS[provider["protocol"]]
+    agent = protocol["metrics"] == "agent"
     lines = [
-        f"{'До первого текста' if opencode else 'До первого токена'}: "
+        f"{'До первого текста' if agent else 'До первого токена'}: "
         f"{format_number(result.get('first_token_seconds'))} сек",
         f"Полное время: {format_number(result.get('total_seconds'))} сек",
-        f"{'Эффективная скорость агента' if opencode else 'Скорость генерации'}: "
+        f"{'Эффективная скорость агента' if agent else 'Скорость генерации'}: "
         f"{format_number(result.get('tokens_per_second'))} токен/сек",
-        f"{'Входных токенов без кэша' if opencode else 'Токенов в промпте'}: "
+        f"{'Входных токенов без кэша' if agent else 'Токенов в промпте'}: "
         f"{format_count(result.get('prompt_tokens'))}",
         f"Сгенерировано токенов: {format_count(result.get('tokens_generated'))}",
     ]
-    if opencode:
+    if agent:
         lines.extend(
             [
                 f"Токенов размышления: {format_count(result.get('reasoning_tokens'))}",
@@ -120,7 +159,7 @@ def metric_lines(result):
                 f"Шагов агента: {format_count(result.get('agent_steps'))}",
             ]
         )
-    if result["location"] == "local":
+    if protocol["metrics"] == "generation":
         lines.append(
             f"Загрузка модели: {format_number(result.get('load_seconds'))} сек"
         )
@@ -132,7 +171,7 @@ def format_list_number(number, count):
 
 
 def source_name(source):
-    return "OpenCode" if source == "opencode" else "Ollama"
+    return PROVIDERS.get(source, {}).get("title", source)
 
 
 def safe_filename(value):
@@ -149,9 +188,9 @@ def choose_number(count, choice, spinner):
     return None
 
 
-def get_ollama_models():
+def get_ollama_api_models(provider_id, provider):
     try:
-        with urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=10) as response:
+        with urllib.request.urlopen(provider["models_url"], timeout=10) as response:
             data = json.load(response)
     except Exception:
         return False, []
@@ -162,23 +201,21 @@ def get_ollama_models():
         if name:
             models.append(
                 {
-                    "source": "ollama",
-                    "provider": "ollama",
+                    "source": provider_id,
                     "name": name,
                     "full_name": name,
-                    "location": "local",
                 }
             )
     return True, models
 
 
-def get_opencode_models():
-    if shutil.which("opencode") is None:
+def get_opencode_cli_models(provider_id, provider):
+    if shutil.which(provider["executable"]) is None:
         return False, []
 
     try:
         result = subprocess.run(
-            ["opencode", "models"],
+            provider["models_command"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -194,14 +231,12 @@ def get_opencode_models():
         full_name = line.strip()
         if not full_name or "/" not in full_name:
             continue
-        provider, name = full_name.split("/", 1)
+        _, name = full_name.split("/", 1)
         models.append(
             {
-                "source": "opencode",
-                "provider": provider,
+                "source": provider_id,
                 "name": name,
                 "full_name": full_name,
-                "location": "cloud",
             }
         )
     return True, models
@@ -222,9 +257,9 @@ def get_tests():
     return tests
 
 
-def get_running_ollama_models():
+def get_running_local_models(provider):
     result = subprocess.run(
-        ["ollama", "ps"],
+        provider["running_command"],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -235,8 +270,8 @@ def get_running_ollama_models():
     return [line.split()[0] for line in lines]
 
 
-def prepare_ollama_model(selected_model, spinner):
-    running_models = get_running_ollama_models()
+def prepare_local_model(provider, selected_model, spinner):
+    running_models = get_running_local_models(provider)
     other_models = [model for model in running_models if model != selected_model]
 
     if selected_model in running_models:
@@ -244,15 +279,15 @@ def prepare_ollama_model(selected_model, spinner):
 
     for model in other_models:
         spinner.write(f"Останавливаю другую модель: {model}")
-        subprocess.run(["ollama", "stop", model], check=True)
+        subprocess.run(provider["stop_command"] + [model], check=True)
 
 
-def run_ollama_test(model, prompt, spinner):
+def run_ollama_api_test(provider, model, prompt, test_file, spinner):
     data = json.dumps(
         {"model": model["name"], "prompt": prompt, "stream": True}
     ).encode("utf-8")
     request = urllib.request.Request(
-        OLLAMA_GENERATE_URL,
+        provider["generate_url"],
         data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -337,7 +372,7 @@ def add_opencode_event(event_log, header, content="", spinner=None):
         print(output)
 
 
-def run_opencode_test(model, prompt, test_file, spinner):
+def run_opencode_cli_test(provider, model, prompt, test_file, spinner):
     script_dir = PROGRAM_DIR
     work_name = "_".join(
         [
@@ -370,16 +405,7 @@ def run_opencode_test(model, prompt, test_file, spinner):
 
     try:
         process = subprocess.Popen(
-            [
-                "opencode",
-                "run",
-                "--format",
-                "json",
-                "--thinking",
-                "--model",
-                model["full_name"],
-                prompt,
-            ],
+            provider["run_command"] + ["--model", model["full_name"], prompt],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -391,7 +417,7 @@ def run_opencode_test(model, prompt, test_file, spinner):
         for line in process.stdout:
             if not line.strip():
                 continue
-            if SAVE_OPENCODE_JSON_LOG:
+            if SAVE_AGENT_JSON_LOG:
                 json_events.append(line.rstrip("\r\n"))
             event = json.loads(line)
             event_type = event.get("type")
@@ -445,7 +471,10 @@ def run_opencode_test(model, prompt, test_file, spinner):
                 if not isinstance(error, str):
                     error = json.dumps(error, ensure_ascii=False, indent=2)
                 add_opencode_event(
-                    event_log, f"[{elapsed}][ОШИБКА OPENCODE]", error, spinner
+                    event_log,
+                    f"[{elapsed}][ОШИБКА {provider['title'].upper()}]",
+                    error,
+                    spinner,
                 )
 
         error_text = process.stderr.read().strip()
@@ -482,7 +511,9 @@ def run_opencode_test(model, prompt, test_file, spinner):
         "json_event_log": "\n".join(json_events),
     }
     if return_code:
-        result["error"] = error_text or f"OpenCode завершился с кодом {return_code}"
+        result["error"] = error_text or (
+            f"{provider['title']} завершился с кодом {return_code}"
+        )
     return result
 
 
@@ -513,7 +544,8 @@ def save_report(result, test_file, test_title, prompt):
     with report_path.open("w", encoding="utf-8") as report:
         report.write(f"# AI MODELS BENCHMARK v{VERSION}\n")
         report.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        location_label = "локально" if result["location"] == "local" else "облако"
+        provider = PROVIDERS[result["source"]]
+        location_label = provider["location_title"]
         report.write(f"Источник: {source_name(result['source'])} ({location_label})\n")
         report.write(f"Модель: {result['name']}\n")
         if result.get("agent_work_dir"):
@@ -538,7 +570,7 @@ def save_report(result, test_file, test_title, prompt):
             report.write("\n# ОТВЕТ МОДЕЛИ:\n")
             report.write(result["response"] + "\n")
 
-    if SAVE_OPENCODE_JSON_LOG and result.get("json_event_log"):
+    if SAVE_AGENT_JSON_LOG and result.get("json_event_log"):
         report_path.with_suffix(".log").write_text(
             result["json_event_log"] + "\n", encoding="utf-8"
         )
@@ -551,21 +583,15 @@ def run(spinner):
     spinner.write("=" * 60)
     spinner.write("Поиск доступных моделей...\n")
 
-    ollama_found, ollama_models = get_ollama_models()
-    opencode_found, opencode_models = get_opencode_models()
-
-    spinner.write(
-        f"Ollama    - {len(ollama_models)} моделей"
-        if ollama_found
-        else "Ollama    - не обнаружена (нужен запущенный Ollama)"
-    )
-    spinner.write(
-        f"OpenCode  - {len(opencode_models)} моделей"
-        if opencode_found
-        else "OpenCode  - не обнаружен (нужен OpenCode CLI, команда 'opencode')"
-    )
-
-    models = ollama_models + opencode_models
+    models = []
+    for provider_id, provider in PROVIDERS.items():
+        protocol = PROTOCOLS[provider["protocol"]]
+        found, provider_models = protocol["get_models"](provider_id, provider)
+        status = (
+            f"{len(provider_models)} моделей" if found else provider["unavailable"]
+        )
+        spinner.write(f"{provider['title']:<10}- {status}")
+        models.extend(provider_models)
     if not models:
         spinner.write("\nДоступные модели не найдены.")
         return
@@ -578,9 +604,8 @@ def run(spinner):
     while True:
         spinner.write("\nДоступные модели:\n")
         for number, model in enumerate(models, start=1):
-            location_label = (
-                "локально" if model["location"] == "local" else "облако"
-            )
+            provider = PROVIDERS[model["source"]]
+            location_label = provider["location_title"]
             source_label = source_name(model["source"])
             label = f"{source_label} — {model['name']} ({location_label})"
             spinner.write(f"{format_list_number(number, len(models))} - {label}")
@@ -592,7 +617,9 @@ def run(spinner):
             return
         model = models[model_index]
 
-        location_label = "локально" if model["location"] == "local" else "облако"
+        provider = PROVIDERS[model["source"]]
+        protocol = PROTOCOLS[provider["protocol"]]
+        location_label = provider["location_title"]
         spinner.write(
             f"\nВыбранная модель: {source_name(model['source'])} — "
             f"{model['name']} ({location_label})"
@@ -617,18 +644,16 @@ def run(spinner):
 
         break
 
-    if model["source"] == "ollama":
-        prepare_ollama_model(model["name"], spinner)
+    prepare = protocol["prepare"]
+    if prepare:
+        prepare(provider, model["name"], spinner)
 
     completed_tests = 0
     try:
         for test_file, test_title, prompt in selected_tests:
             spinner.write(f"\nТест: {test_title}\n")
 
-            if model["source"] == "ollama":
-                result = run_ollama_test(model, prompt, spinner)
-            else:
-                result = run_opencode_test(model, prompt, test_file, spinner)
+            result = protocol["run"](provider, model, prompt, test_file, spinner)
 
             print_result(result, spinner)
             report_name = save_report(result, test_file, test_title, prompt)

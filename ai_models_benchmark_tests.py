@@ -83,23 +83,33 @@ class RunTests(unittest.TestCase):
         spinner.input.side_effect = input_values or ["1", choice]
         model = {
             "source": "ollama",
-            "provider": "ollama",
             "name": "test-model",
             "full_name": "test-model",
-            "location": "local",
         }
         tests = [
             ("01_test.md", "Первый тест", "prompt 1"),
             ("02_test.md", "Второй тест", "prompt 2"),
         ]
         result = object()
+        prepare_model = Mock()
+        run_test = Mock(return_value=result)
+        protocol = {
+            "get_models": Mock(return_value=(True, [model])),
+            "prepare": prepare_model,
+            "run": run_test,
+            "metrics": "generation",
+        }
 
         with (
-            patch.object(benchmark, "get_ollama_models", return_value=(True, [model])),
-            patch.object(benchmark, "get_opencode_models", return_value=(False, [])),
+            patch.dict(
+                benchmark.PROVIDERS,
+                {"ollama": benchmark.PROVIDERS["ollama"]},
+                clear=True,
+            ),
+            patch.dict(
+                benchmark.PROTOCOLS, {"ollama_api": protocol}, clear=True
+            ),
             patch.object(benchmark, "get_tests", return_value=tests),
-            patch.object(benchmark, "prepare_ollama_model") as prepare_model,
-            patch.object(benchmark, "run_ollama_test", return_value=result) as run_test,
             patch.object(benchmark, "print_result"),
             patch.object(benchmark, "save_report", return_value="report.txt") as save_report,
         ):
@@ -114,7 +124,9 @@ class RunTests(unittest.TestCase):
             self.run_with_test_choice("X")
         )
 
-        prepare_model.assert_called_once_with(model["name"], spinner)
+        prepare_model.assert_called_once_with(
+            benchmark.PROVIDERS["ollama"], model["name"], spinner
+        )
         self.assertEqual(run_test.call_count, len(tests))
         self.assertEqual(save_report.call_count, len(tests))
         spinner.write.assert_any_call("Пройдено тестов: 2")
@@ -122,7 +134,9 @@ class RunTests(unittest.TestCase):
     def test_number_runs_only_selected_test(self):
         spinner, model, tests, _, run_test, save_report = self.run_with_test_choice("2")
 
-        run_test.assert_called_once_with(model, tests[1][2], spinner)
+        run_test.assert_called_once_with(
+            benchmark.PROVIDERS["ollama"], model, tests[1][2], tests[1][0], spinner
+        )
         save_report.assert_called_once_with(
             run_test.return_value, tests[1][0], tests[1][1], tests[1][2]
         )
@@ -150,23 +164,29 @@ class RunTests(unittest.TestCase):
 
 class ProviderFlowIntegrationTests(unittest.TestCase):
     ollama_model = {
-        "source": "ollama",
-        "provider": "ollama",
+        "source": "local_test",
         "name": "test-ollama",
         "full_name": "test-ollama",
-        "location": "local",
     }
     opencode_model = {
-        "source": "opencode",
-        "provider": "test",
+        "source": "agent_test",
         "name": "test-agent",
         "full_name": "test/test-agent",
-        "location": "cloud",
     }
 
     def run_isolated(self, model_choice, provider_patch, timer_values):
         spinner = Mock()
         spinner.input.side_effect = [model_choice, "1"]
+        providers = {
+            "local_test": {
+                **benchmark.PROVIDERS["ollama"],
+                "title": "Local Test",
+            },
+            "agent_test": {
+                **benchmark.PROVIDERS["opencode"],
+                "title": "Agent Test",
+            },
+        }
 
         with tempfile.TemporaryDirectory() as directory:
             program_dir = Path(directory)
@@ -175,17 +195,18 @@ class ProviderFlowIntegrationTests(unittest.TestCase):
             )
             with (
                 patch.object(benchmark, "PROGRAM_DIR", program_dir),
-                patch.object(
-                    benchmark,
-                    "get_ollama_models",
-                    return_value=(True, [self.ollama_model]),
+                patch.dict(benchmark.PROVIDERS, providers, clear=True),
+                patch.dict(
+                    benchmark.PROTOCOLS["ollama_api"],
+                    {
+                        "get_models": Mock(return_value=(True, [self.ollama_model])),
+                        "prepare": Mock(),
+                    },
                 ),
-                patch.object(
-                    benchmark,
-                    "get_opencode_models",
-                    return_value=(True, [self.opencode_model]),
+                patch.dict(
+                    benchmark.PROTOCOLS["opencode_cli"],
+                    {"get_models": Mock(return_value=(True, [self.opencode_model]))},
                 ),
-                patch.object(benchmark, "prepare_ollama_model"),
                 patch.object(
                     benchmark.time, "perf_counter", side_effect=timer_values
                 ),
@@ -218,7 +239,7 @@ class ProviderFlowIntegrationTests(unittest.TestCase):
             [100.0, 101.0, 104.0],
         )
 
-        self.assertIn("Источник: Ollama (локально)", report)
+        self.assertIn("Источник: Local Test (локально)", report)
         self.assertIn("Модель: test-ollama", report)
         self.assertIn("До первого токена: 1.00 сек", report)
         self.assertIn("Полное время: 4.00 сек", report)
@@ -259,7 +280,7 @@ class ProviderFlowIntegrationTests(unittest.TestCase):
             [100.0, 100.0, 101.0, 102.0, 103.0, 104.0, 104.5, 105.0],
         )
 
-        self.assertIn("Источник: OpenCode (облако)", report)
+        self.assertIn("Источник: Agent Test (облако)", report)
         self.assertIn("Модель: test-agent", report)
         self.assertIn("До первого текста: 4.00 сек", report)
         self.assertIn("Полное время: 5.00 сек", report)
@@ -317,7 +338,7 @@ class PrintResultTests(unittest.TestCase):
     def test_opencode_uses_agent_metric_labels(self):
         spinner = Mock()
         result = {
-            "source": "opencode", "location": "cloud",
+            "source": "opencode",
             "first_token_seconds": 2, "total_seconds": 10,
             "tokens_per_second": 5, "prompt_tokens": 20,
             "tokens_generated": 50, "reasoning_tokens": 3,
@@ -336,7 +357,7 @@ class PrintResultTests(unittest.TestCase):
     def test_ollama_keeps_generation_metric_labels(self):
         spinner = Mock()
         result = {
-            "source": "ollama", "location": "local",
+            "source": "ollama",
             "first_token_seconds": 2, "total_seconds": 10,
             "tokens_per_second": 5, "prompt_tokens": 20,
             "tokens_generated": 50, "load_seconds": 1,
@@ -379,10 +400,11 @@ class SourceNameTests(unittest.TestCase):
     def test_opencode(self):
         self.assertEqual(benchmark.source_name("opencode"), "OpenCode")
 
-    def test_everything_else_is_ollama(self):
-        for source in ["ollama", "", "other"]:
-            with self.subTest(source=source):
-                self.assertEqual(benchmark.source_name(source), "Ollama")
+    def test_ollama(self):
+        self.assertEqual(benchmark.source_name("ollama"), "Ollama")
+
+    def test_unknown_source_keeps_identifier(self):
+        self.assertEqual(benchmark.source_name("other"), "other")
 
 
 class SafeFilenameTests(unittest.TestCase):
