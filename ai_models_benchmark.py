@@ -11,6 +11,9 @@ from pathlib import Path
 
 
 VERSION = "0.9g"
+PROGRAM_DIR = Path(
+    sys.executable if getattr(sys, "frozen", False) else __file__
+).resolve().parent
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 EXIT_PROMPT = "\nНажми Enter для выхода..."
@@ -206,7 +209,7 @@ def get_opencode_models():
 
 def get_tests():
     tests = []
-    for test_file in sorted(Path(__file__).resolve().parent.glob("[0-9][0-9]_*.md")):
+    for test_file in sorted(PROGRAM_DIR.glob("[0-9][0-9]_*.md")):
         lines = test_file.read_text(encoding="utf-8").splitlines()
         if lines and lines[0].startswith("#"):
             tests.append(
@@ -335,7 +338,7 @@ def add_opencode_event(event_log, header, content="", spinner=None):
 
 
 def run_opencode_test(model, prompt, test_file, spinner):
-    script_dir = Path(__file__).resolve().parent
+    script_dir = PROGRAM_DIR
     work_name = "_".join(
         [
             datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
@@ -505,7 +508,7 @@ def save_report(result, test_file, test_title, prompt):
         timestamp,
     ]
     report_name = safe_filename("_".join(name_parts)) + ".txt"
-    report_path = Path(__file__).resolve().parent / report_name
+    report_path = PROGRAM_DIR / report_name
 
     with report_path.open("w", encoding="utf-8") as report:
         report.write(f"# AI MODELS BENCHMARK v{VERSION}\n")

@@ -31,6 +31,8 @@
 
 ## Запуск
 
+Из исходного кода:
+
 ```text
 python ai_models_benchmark.py
 ```
@@ -46,6 +48,25 @@ python ai_models_benchmark.py --no-spinner
 ```text
 python ai_models_benchmark.py --opencode-json-log
 ```
+
+Готовая сборка Windows не требует установленного Python. Скачайте ZIP соответствующей версии, полностью распакуйте его и запустите:
+
+```text
+ai_models_benchmark.exe
+```
+
+Ollama и OpenCode не входят в сборку и при необходимости устанавливаются отдельно.
+
+## Сборка для Windows
+
+Установите PyInstaller и запустите сборщик из корневой директории проекта:
+
+```text
+python -m pip install pyinstaller
+.\build_windows.ps1
+```
+
+Готовая папка и нумерованный ZIP будут созданы в каталоге `release`.
 
 ## Тестовые задания
 

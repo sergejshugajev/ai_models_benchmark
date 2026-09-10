@@ -16,3 +16,10 @@ opencode.json
 
 # Кэш Python
 __pycache__/
+
+# Служебные файлы сборки
+build/
+dist/
+
+# Готовые локальные сборки
+release/
