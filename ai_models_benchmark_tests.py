@@ -1,6 +1,9 @@
 import io
+import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import ai_models_benchmark as benchmark
@@ -9,6 +12,34 @@ import ai_models_benchmark as benchmark
 class TerminalOutput(io.StringIO):
     def isatty(self):
         return True
+
+
+class FakeHttpResponse:
+    def __init__(self, chunks):
+        self.lines = [
+            (json.dumps(chunk, ensure_ascii=False) + "\n").encode("utf-8")
+            for chunk in chunks
+        ]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def __iter__(self):
+        return iter(self.lines)
+
+
+class FakeProcess:
+    def __init__(self, events):
+        self.stdout = io.StringIO(
+            "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events)
+        )
+        self.stderr = io.StringIO("")
+
+    def wait(self):
+        return 0
 
 
 class SpinnerTests(unittest.TestCase):
@@ -116,6 +147,134 @@ class RunTests(unittest.TestCase):
         run_test.assert_called_once()
         save_report.assert_called_once()
 
+
+class ProviderFlowIntegrationTests(unittest.TestCase):
+    ollama_model = {
+        "source": "ollama",
+        "provider": "ollama",
+        "name": "test-ollama",
+        "full_name": "test-ollama",
+        "location": "local",
+    }
+    opencode_model = {
+        "source": "opencode",
+        "provider": "test",
+        "name": "test-agent",
+        "full_name": "test/test-agent",
+        "location": "cloud",
+    }
+
+    def run_isolated(self, model_choice, provider_patch, timer_values):
+        spinner = Mock()
+        spinner.input.side_effect = [model_choice, "1"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            program_dir = Path(directory)
+            (program_dir / "01_test.md").write_text(
+                "# Интеграционный тест\nВерни однозначный ответ.", encoding="utf-8"
+            )
+            with (
+                patch.object(benchmark, "PROGRAM_DIR", program_dir),
+                patch.object(
+                    benchmark,
+                    "get_ollama_models",
+                    return_value=(True, [self.ollama_model]),
+                ),
+                patch.object(
+                    benchmark,
+                    "get_opencode_models",
+                    return_value=(True, [self.opencode_model]),
+                ),
+                patch.object(benchmark, "prepare_ollama_model"),
+                patch.object(
+                    benchmark.time, "perf_counter", side_effect=timer_values
+                ),
+                provider_patch,
+            ):
+                benchmark.run(spinner)
+
+            reports = list(program_dir.glob("ai_test_*.txt"))
+            self.assertEqual(len(reports), 1)
+            return reports[0].read_text(encoding="utf-8")
+
+    def test_ollama_flow_creates_expected_report(self):
+        response = FakeHttpResponse(
+            [
+                {"response": "Тестовый ", "done": False},
+                {
+                    "response": "ответ",
+                    "done": True,
+                    "prompt_eval_count": 10,
+                    "eval_count": 2,
+                    "eval_duration": 1_000_000_000,
+                    "load_duration": 500_000_000,
+                },
+            ]
+        )
+
+        report = self.run_isolated(
+            "1",
+            patch.object(benchmark.urllib.request, "urlopen", return_value=response),
+            [100.0, 101.0, 104.0],
+        )
+
+        self.assertIn("Источник: Ollama (локально)", report)
+        self.assertIn("Модель: test-ollama", report)
+        self.assertIn("До первого токена: 1.00 сек", report)
+        self.assertIn("Полное время: 4.00 сек", report)
+        self.assertIn("Скорость генерации: 2.00 токен/сек", report)
+        self.assertIn("Токенов в промпте: 10", report)
+        self.assertIn("Сгенерировано токенов: 2", report)
+        self.assertIn("# ОТВЕТ МОДЕЛИ:\nТестовый ответ", report)
+
+    def test_opencode_flow_creates_expected_report(self):
+        process = FakeProcess(
+            [
+                {"type": "step_start"},
+                {"type": "reasoning", "text": "Проверяю условие"},
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "tool": "read",
+                        "state": {"status": "completed", "title": "Прочитан файл"},
+                    },
+                },
+                {"type": "text", "text": "Однозначный тестовый ответ"},
+                {
+                    "type": "step_finish",
+                    "tokens": {
+                        "input": 10,
+                        "output": 4,
+                        "reasoning": 2,
+                        "total": 19,
+                        "cache": {"read": 3},
+                    },
+                },
+            ]
+        )
+
+        report = self.run_isolated(
+            "2",
+            patch.object(benchmark.subprocess, "Popen", return_value=process),
+            [100.0, 100.0, 101.0, 102.0, 103.0, 104.0, 104.5, 105.0],
+        )
+
+        self.assertIn("Источник: OpenCode (облако)", report)
+        self.assertIn("Модель: test-agent", report)
+        self.assertIn("До первого текста: 4.00 сек", report)
+        self.assertIn("Полное время: 5.00 сек", report)
+        self.assertIn("Эффективная скорость агента: 0.80 токен/сек", report)
+        self.assertIn("Входных токенов без кэша: 10", report)
+        self.assertIn("Сгенерировано токенов: 4", report)
+        self.assertIn("Токенов размышления: 2", report)
+        self.assertIn("Токенов из кэша: 3", report)
+        self.assertIn("Всего токенов: 19", report)
+        self.assertIn("Шагов агента: 1", report)
+        self.assertIn("[0][АГЕНТ] Шаг 1", report)
+        self.assertIn("[1][РАЗМЫШЛЕНИЕ]\nПроверяю условие", report)
+        self.assertIn("[2][ИНСТРУМЕНТ] read — completed\nПрочитан файл", report)
+        self.assertIn("[3][ОТВЕТ]\nОднозначный тестовый ответ", report)
+        self.assertIn("# ОТВЕТ МОДЕЛИ:\nОднозначный тестовый ответ", report)
 
 class FormatNumberTests(unittest.TestCase):
     def test_none_returns_unavailable(self):

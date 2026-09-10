@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "0.9g"
+VERSION = "0.9h"
 PROGRAM_DIR = Path(
     sys.executable if getattr(sys, "frozen", False) else __file__
 ).resolve().parent
