@@ -260,7 +260,10 @@ class ProviderFlowIntegrationTests(unittest.TestCase):
                         "state": {"status": "completed", "title": "Прочитан файл"},
                     },
                 },
-                {"type": "text", "text": "Однозначный тестовый ответ"},
+                {
+                    "type": "text",
+                    "text": "\n\nОднозначный тестовый ответ\n\n\nВторая строка\n\n",
+                },
                 {
                     "type": "step_finish",
                     "tokens": {
@@ -294,8 +297,9 @@ class ProviderFlowIntegrationTests(unittest.TestCase):
         self.assertIn("[0][АГЕНТ] Шаг 1", report)
         self.assertIn("[1][РАЗМЫШЛЕНИЕ]\nПроверяю условие", report)
         self.assertIn("[2][ИНСТРУМЕНТ] read — completed\nПрочитан файл", report)
-        self.assertIn("[3][ОТВЕТ]\nОднозначный тестовый ответ", report)
-        self.assertIn("# ОТВЕТ МОДЕЛИ:\nОднозначный тестовый ответ", report)
+        cleaned_response = "Однозначный тестовый ответ\n\nВторая строка"
+        self.assertIn(f"[3][ОТВЕТ]\n{cleaned_response}", report)
+        self.assertIn(f"# ОТВЕТ МОДЕЛИ:\n{cleaned_response}\n", report)
 
 class FormatNumberTests(unittest.TestCase):
     def test_none_returns_unavailable(self):
