@@ -66,7 +66,9 @@ $releaseFiles = @(
     "LICENSE",
     "preview.gif",
     "ai_models_benchmark_changelog.md",
-    "ai_models_benchmark_info.md"
+    "ai_models_benchmark_info.md",
+    "ai_models_benchmark_evaluator_guide.md",
+    "ai_models_benchmark_tests_analysis.md"
 )
 
 foreach ($fileName in $releaseFiles) {
