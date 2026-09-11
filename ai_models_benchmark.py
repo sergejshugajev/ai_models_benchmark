@@ -41,6 +41,18 @@ PROVIDERS = {
         "run_command": ["opencode", "run", "--format", "json", "--thinking"],
         "unavailable": "не обнаружен (нужен OpenCode CLI, команда 'opencode')",
     },
+    "lmstudio": {
+        "title": "LM Studio",
+        "location": "local",
+        "location_title": "локально",
+        "protocol": "lmstudio_api",
+        "models_url": "http://localhost:1234/api/v1/models",
+        "chat_url": "http://localhost:1234/api/v1/chat",
+        "running_command": ["lms", "ps", "--json"],
+        "load_command": ["lms", "load"],
+        "unload_command": ["lms", "unload"],
+        "unavailable": "не обнаружена (нужен запущенный сервер LM Studio)",
+    },
 }
 
 PROTOCOLS = {
@@ -55,6 +67,12 @@ PROTOCOLS = {
         "prepare": None,
         "run": lambda *args: run_opencode_cli_test(*args),
         "metrics": "agent",
+    },
+    "lmstudio_api": {
+        "get_models": lambda *args: get_lmstudio_api_models(*args),
+        "prepare": lambda *args: prepare_lmstudio_model(*args),
+        "run": lambda *args: run_lmstudio_api_test(*args),
+        "metrics": "local_reasoning",
     },
 }
 
@@ -150,10 +168,13 @@ def metric_lines(result):
         f"{format_count(result.get('prompt_tokens'))}",
         f"Сгенерировано токенов: {format_count(result.get('tokens_generated'))}",
     ]
+    if agent or protocol["metrics"] == "local_reasoning":
+        lines.append(
+            f"Токенов размышления: {format_count(result.get('reasoning_tokens'))}"
+        )
     if agent:
         lines.extend(
             [
-                f"Токенов размышления: {format_count(result.get('reasoning_tokens'))}",
                 f"Токенов из кэша: {format_count(result.get('cache_read_tokens'))}",
                 f"Всего токенов: {format_count(result.get('total_tokens'))}",
                 f"Шагов агента: {format_count(result.get('agent_steps'))}",
@@ -242,6 +263,27 @@ def get_opencode_cli_models(provider_id, provider):
     return True, models
 
 
+def get_lmstudio_api_models(provider_id, provider):
+    try:
+        with urllib.request.urlopen(provider["models_url"], timeout=10) as response:
+            data = json.load(response)
+    except Exception:
+        return False, []
+
+    models = []
+    for item in data.get("models", []):
+        model_key = item.get("key")
+        if item.get("type") == "llm" and model_key:
+            models.append(
+                {
+                    "source": provider_id,
+                    "name": item.get("display_name") or model_key,
+                    "full_name": model_key,
+                }
+            )
+    return True, models
+
+
 def get_tests():
     tests = []
     for test_file in sorted(PROGRAM_DIR.glob("[0-9][0-9]_*.md")):
@@ -271,6 +313,7 @@ def get_running_local_models(provider):
 
 
 def prepare_local_model(provider, selected_model, spinner):
+    selected_model = selected_model["name"]
     running_models = get_running_local_models(provider)
     other_models = [model for model in running_models if model != selected_model]
 
@@ -280,6 +323,35 @@ def prepare_local_model(provider, selected_model, spinner):
     for model in other_models:
         spinner.write(f"Останавливаю другую модель: {model}")
         subprocess.run(provider["stop_command"] + [model], check=True)
+
+
+def prepare_lmstudio_model(provider, selected_model, spinner):
+    result = subprocess.run(
+        provider["running_command"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    )
+    running_models = json.loads(result.stdout)
+    selected_key = selected_model["full_name"]
+    selected_loaded = False
+
+    for model in running_models:
+        model_key = model.get("modelKey")
+        identifier = model.get("identifier") or model_key
+        if model_key == selected_key:
+            selected_loaded = True
+        elif identifier:
+            spinner.write(f"Останавливаю другую модель: {model_key or identifier}")
+            subprocess.run(provider["unload_command"] + [identifier], check=True)
+
+    if selected_loaded:
+        spinner.write("Выбранная модель уже загружена в память.")
+    else:
+        spinner.write(f"Загружаю модель: {selected_model['name']}")
+        subprocess.run(provider["load_command"] + [selected_key, "-y"], check=True)
 
 
 def run_ollama_api_test(provider, model, prompt, test_file, spinner):
@@ -334,6 +406,69 @@ def run_ollama_api_test(provider, model, prompt, test_file, spinner):
             if final_chunk.get("load_duration") is not None
             else None
         ),
+        "response": full_response,
+    }
+
+
+def run_lmstudio_api_test(provider, model, prompt, test_file, spinner):
+    data = json.dumps(
+        {"model": model["full_name"], "input": prompt, "stream": True}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        provider["chat_url"],
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    start_time = time.perf_counter()
+    first_token_time = None
+    response_parts = []
+    final_result = {}
+
+    try:
+        with urllib.request.urlopen(request, timeout=1800) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8").strip()
+                if not line.startswith("data: "):
+                    continue
+                event = json.loads(line[6:])
+                event_type = event.get("type")
+
+                if event_type == "message.delta":
+                    text = event.get("content", "")
+                    if text:
+                        if first_token_time is None:
+                            first_token_time = time.perf_counter()
+                        response_parts.append(text)
+                        spinner.write(text, end="")
+                elif event_type == "chat.end":
+                    final_result = event.get("result") or {}
+                elif event_type == "error":
+                    raise RuntimeError(event.get("error") or event)
+    except Exception as error:
+        return make_error_result(model, error)
+
+    end_time = time.perf_counter()
+    stats = final_result.get("stats") or {}
+    full_response = "".join(response_parts)
+    if not full_response:
+        full_response = "".join(
+            item.get("content", "")
+            for item in final_result.get("output", [])
+            if item.get("type") == "message"
+        )
+
+    return {
+        **model,
+        "first_token_seconds": stats.get("time_to_first_token_seconds") or (
+            first_token_time - start_time if first_token_time is not None else None
+        ),
+        "total_seconds": end_time - start_time,
+        "tokens_per_second": stats.get("tokens_per_second"),
+        "tokens_generated": stats.get("total_output_tokens"),
+        "prompt_tokens": stats.get("input_tokens"),
+        "reasoning_tokens": stats.get("reasoning_output_tokens"),
         "response": full_response,
     }
 
@@ -646,7 +781,7 @@ def run(spinner):
 
     prepare = protocol["prepare"]
     if prepare:
-        prepare(provider, model["name"], spinner)
+        prepare(provider, model, spinner)
 
     completed_tests = 0
     try:

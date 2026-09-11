@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import ai_models_benchmark as benchmark
 
@@ -40,6 +40,30 @@ class FakeProcess:
 
     def wait(self):
         return 0
+
+
+class FakeSseResponse:
+    def __init__(self, events):
+        self.lines = []
+        for event in events:
+            self.lines.extend(
+                [
+                    f"event: {event['type']}\n".encode("utf-8"),
+                    ("data: " + json.dumps(event, ensure_ascii=False) + "\n").encode(
+                        "utf-8"
+                    ),
+                    b"\n",
+                ]
+            )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def __iter__(self):
+        return iter(self.lines)
 
 
 class SpinnerTests(unittest.TestCase):
@@ -125,7 +149,7 @@ class RunTests(unittest.TestCase):
         )
 
         prepare_model.assert_called_once_with(
-            benchmark.PROVIDERS["ollama"], model["name"], spinner
+            benchmark.PROVIDERS["ollama"], model, spinner
         )
         self.assertEqual(run_test.call_count, len(tests))
         self.assertEqual(save_report.call_count, len(tests))
@@ -173,6 +197,11 @@ class ProviderFlowIntegrationTests(unittest.TestCase):
         "name": "test-agent",
         "full_name": "test/test-agent",
     }
+    lmstudio_model = {
+        "source": "lmstudio_test",
+        "name": "Test LM",
+        "full_name": "test/lm-model",
+    }
 
     def run_isolated(self, model_choice, provider_patch, timer_values):
         spinner = Mock()
@@ -185,6 +214,10 @@ class ProviderFlowIntegrationTests(unittest.TestCase):
             "agent_test": {
                 **benchmark.PROVIDERS["opencode"],
                 "title": "Agent Test",
+            },
+            "lmstudio_test": {
+                **benchmark.PROVIDERS["lmstudio"],
+                "title": "LM Test",
             },
         }
 
@@ -206,6 +239,15 @@ class ProviderFlowIntegrationTests(unittest.TestCase):
                 patch.dict(
                     benchmark.PROTOCOLS["opencode_cli"],
                     {"get_models": Mock(return_value=(True, [self.opencode_model]))},
+                ),
+                patch.dict(
+                    benchmark.PROTOCOLS["lmstudio_api"],
+                    {
+                        "get_models": Mock(
+                            return_value=(True, [self.lmstudio_model])
+                        ),
+                        "prepare": Mock(),
+                    },
                 ),
                 patch.object(
                     benchmark.time, "perf_counter", side_effect=timer_values
@@ -300,6 +342,140 @@ class ProviderFlowIntegrationTests(unittest.TestCase):
         cleaned_response = "Однозначный тестовый ответ\n\nВторая строка"
         self.assertIn(f"[3][ОТВЕТ]\n{cleaned_response}", report)
         self.assertIn(f"# ОТВЕТ МОДЕЛИ:\n{cleaned_response}\n", report)
+
+    def test_lmstudio_flow_creates_expected_report(self):
+        response = FakeSseResponse(
+            [
+                {"type": "chat.start", "model_instance_id": "test/lm-model"},
+                {"type": "message.start"},
+                {"type": "message.delta", "content": "Тестовый "},
+                {"type": "message.delta", "content": "ответ"},
+                {"type": "message.end"},
+                {
+                    "type": "chat.end",
+                    "result": {
+                        "output": [{"type": "message", "content": "Тестовый ответ"}],
+                        "stats": {
+                            "input_tokens": 12,
+                            "total_output_tokens": 4,
+                            "reasoning_output_tokens": 1,
+                            "tokens_per_second": 8.5,
+                            "time_to_first_token_seconds": 0.45,
+                        },
+                    },
+                },
+            ]
+        )
+
+        report = self.run_isolated(
+            "3",
+            patch.object(benchmark.urllib.request, "urlopen", return_value=response),
+            [100.0, 101.0, 104.0],
+        )
+
+        self.assertIn("Источник: LM Test (локально)", report)
+        self.assertIn("Модель: Test LM", report)
+        self.assertIn("До первого токена: 0.45 сек", report)
+        self.assertIn("Полное время: 4.00 сек", report)
+        self.assertIn("Скорость генерации: 8.50 токен/сек", report)
+        self.assertIn("Токенов в промпте: 12", report)
+        self.assertIn("Сгенерировано токенов: 4", report)
+        self.assertIn("Токенов размышления: 1", report)
+        self.assertIn("# ОТВЕТ МОДЕЛИ:\nТестовый ответ\n", report)
+
+
+class LmStudioPreparationTests(unittest.TestCase):
+    model = {
+        "source": "lmstudio",
+        "name": "Selected Model",
+        "full_name": "selected/model",
+    }
+
+    def test_keeps_selected_model_and_unloads_another(self):
+        spinner = Mock()
+        running = Mock(
+            stdout=json.dumps(
+                [
+                    {"modelKey": "selected/model", "identifier": "selected/model"},
+                    {"modelKey": "other/model", "identifier": "other-instance"},
+                ]
+            )
+        )
+
+        with patch.object(
+            benchmark.subprocess, "run", side_effect=[running, Mock()]
+        ) as run:
+            benchmark.prepare_lmstudio_model(
+                benchmark.PROVIDERS["lmstudio"], self.model, spinner
+            )
+
+        self.assertEqual(
+            run.call_args_list,
+            [
+                call(
+                    ["lms", "ps", "--json"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=True,
+                ),
+                call(["lms", "unload", "other-instance"], check=True),
+            ],
+        )
+        spinner.write.assert_any_call("Выбранная модель уже загружена в память.")
+
+    def test_loads_selected_model_when_not_running(self):
+        spinner = Mock()
+        running = Mock(stdout="[]")
+
+        with patch.object(
+            benchmark.subprocess, "run", side_effect=[running, Mock()]
+        ) as run:
+            benchmark.prepare_lmstudio_model(
+                benchmark.PROVIDERS["lmstudio"], self.model, spinner
+            )
+
+        self.assertEqual(
+            run.call_args_list[-1],
+            call(["lms", "load", "selected/model", "-y"], check=True),
+        )
+        spinner.write.assert_any_call("Загружаю модель: Selected Model")
+
+
+class LmStudioModelsTests(unittest.TestCase):
+    def test_returns_only_llm_models(self):
+        response = io.BytesIO(
+            json.dumps(
+                {
+                    "models": [
+                        {
+                            "type": "llm",
+                            "key": "test/model",
+                            "display_name": "Test Model",
+                        },
+                        {"type": "embedding", "key": "test/embedding"},
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+        with patch.object(benchmark.urllib.request, "urlopen", return_value=response):
+            found, models = benchmark.get_lmstudio_api_models(
+                "lmstudio", benchmark.PROVIDERS["lmstudio"]
+            )
+
+        self.assertTrue(found)
+        self.assertEqual(
+            models,
+            [
+                {
+                    "source": "lmstudio",
+                    "name": "Test Model",
+                    "full_name": "test/model",
+                }
+            ],
+        )
 
 class FormatNumberTests(unittest.TestCase):
     def test_none_returns_unavailable(self):
