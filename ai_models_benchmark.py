@@ -192,6 +192,19 @@ def format_list_number(number, count):
     return f"{number:0{len(str(count))}d}"
 
 
+def write_model_grid(models, start_number, total_count, spinner):
+    cells = [
+        f"{format_list_number(number, total_count)} - {model['name']}"
+        for number, model in enumerate(models, start_number)
+    ]
+    cell_width = max(map(len, cells)) + 4
+    columns = max(1, shutil.get_terminal_size((120, 24)).columns // cell_width)
+    for row in range(0, len(cells), columns):
+        spinner.write("".join(
+            cell.ljust(cell_width) for cell in cells[row:row + columns]
+        ).rstrip())
+
+
 def source_name(source):
     return PROVIDERS.get(source, {}).get("title", source)
 
@@ -717,21 +730,26 @@ def save_report(result, test_file, test_title, prompt):
 def run(spinner):
     spinner.write(f"AI MODELS BENCHMARK v{VERSION}")
     spinner.write("=" * 60)
-    spinner.write("Поиск доступных моделей...\n")
+    spinner.write("Поиск доступных моделей...")
 
     def check_provider(item):
         provider_id, provider = item
         found, models = PROTOCOLS[provider["protocol"]]["get_models"](
             provider_id, provider
         )
-        status = f"{len(models)} моделей" if found else provider["unavailable"]
-        spinner.write(f"{provider['title']:<10}- {status}")
-        return models
+        return provider_id, provider, found, models
 
     with ThreadPoolExecutor() as executor:
-        models = list(itertools.chain.from_iterable(
-            executor.map(check_provider, PROVIDERS.items())
-        ))
+        provider_results = list(executor.map(check_provider, PROVIDERS.items()))
+    provider_results.sort(key=lambda result: result[2])
+
+    for _, provider, found, _ in provider_results:
+        if not found:
+            spinner.write(f"\n{provider['title']:<10}- {provider['unavailable']}")
+
+    models = list(itertools.chain.from_iterable(
+        found_models for _, _, found, found_models in provider_results if found
+    ))
     if not models:
         spinner.write("\nДоступные модели не найдены.")
         return
@@ -742,13 +760,18 @@ def run(spinner):
         return
 
     while True:
-        spinner.write("\nДоступные модели:\n")
-        for number, model in enumerate(models, start=1):
-            provider = PROVIDERS[model["source"]]
-            location_label = provider["location_title"]
-            source_label = source_name(model["source"])
-            label = f"{source_label} — {model['name']} ({location_label})"
-            spinner.write(f"{format_list_number(number, len(models))} - {label}")
+        start_number = 1
+        for _, provider, found, provider_models in provider_results:
+            if found:
+                spinner.write(
+                    f"\n{provider['title']:<10}- {len(provider_models)} моделей "
+                    f"({provider['location_title']}):"
+                )
+                if provider_models:
+                    write_model_grid(
+                        provider_models, start_number, len(models), spinner
+                    )
+                start_number += len(provider_models)
 
         model_index = choose_number(
             len(models), spinner.input("\nВыбери номер модели: "), spinner

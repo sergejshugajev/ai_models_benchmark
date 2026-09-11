@@ -563,6 +563,22 @@ class FormatListNumberTests(unittest.TestCase):
                 )
 
 
+class WriteModelGridTests(unittest.TestCase):
+    def test_wraps_models_and_keeps_continuous_numbering(self):
+        spinner = Mock()
+        models = [{"name": name} for name in ("one", "two", "three")]
+
+        with patch.object(
+            benchmark.shutil, "get_terminal_size", return_value=Mock(columns=30)
+        ):
+            benchmark.write_model_grid(models, 8, 10, spinner)
+
+        self.assertEqual(
+            spinner.write.call_args_list,
+            [call("08 - one      09 - two"), call("10 - three")],
+        )
+
+
 class ChooseNumberTests(unittest.TestCase):
     def test_accepts_leading_zero(self):
         spinner = Mock()
