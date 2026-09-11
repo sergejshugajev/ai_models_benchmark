@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -718,15 +719,19 @@ def run(spinner):
     spinner.write("=" * 60)
     spinner.write("Поиск доступных моделей...\n")
 
-    models = []
-    for provider_id, provider in PROVIDERS.items():
-        protocol = PROTOCOLS[provider["protocol"]]
-        found, provider_models = protocol["get_models"](provider_id, provider)
-        status = (
-            f"{len(provider_models)} моделей" if found else provider["unavailable"]
+    def check_provider(item):
+        provider_id, provider = item
+        found, models = PROTOCOLS[provider["protocol"]]["get_models"](
+            provider_id, provider
         )
+        status = f"{len(models)} моделей" if found else provider["unavailable"]
         spinner.write(f"{provider['title']:<10}- {status}")
-        models.extend(provider_models)
+        return models
+
+    with ThreadPoolExecutor() as executor:
+        models = list(itertools.chain.from_iterable(
+            executor.map(check_provider, PROVIDERS.items())
+        ))
     if not models:
         spinner.write("\nДоступные модели не найдены.")
         return
