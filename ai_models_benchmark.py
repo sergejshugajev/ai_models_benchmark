@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "0.9h"
+VERSION = "0.9i"
 PROGRAM_DIR = Path(
     sys.executable if getattr(sys, "frozen", False) else __file__
 ).resolve().parent
@@ -221,6 +221,20 @@ def choose_number(count, choice, spinner):
         return int(choice) - 1
     spinner.write("Неверный номер.")
     return None
+
+
+def read_arguments():
+    arguments = [argument for argument in sys.argv[1:] if not argument.startswith("--")]
+    if not arguments:
+        return "", 0
+    if (
+        len(arguments) != 2
+        or not arguments[0]
+        or not arguments[1].isdigit()
+        or int(arguments[1]) < 1
+    ):
+        raise SystemExit("Укажите модель и номер теста.")
+    return arguments[0], int(arguments[1])
 
 
 def get_ollama_api_models(provider_id, provider):
@@ -727,7 +741,7 @@ def save_report(result, test_file, test_title, prompt):
     return report_path.name
 
 
-def run(spinner):
+def run(spinner, argv_model="", argv_test=0):
     spinner.write(f"AI MODELS BENCHMARK v{VERSION}")
     spinner.write("=" * 60)
     spinner.write("Поиск доступных моделей...")
@@ -773,9 +787,30 @@ def run(spinner):
                     )
                 start_number += len(provider_models)
 
-        model_index = choose_number(
-            len(models), spinner.input("\nВыбери номер модели: "), spinner
-        )
+        if argv_model:
+            model_number = int(argv_model) if argv_model.isdigit() else None
+            matches = [
+                index
+                for index, item in enumerate(models)
+                if model_number == index + 1
+                or (
+                    model_number is None
+                    and item["name"].casefold() == argv_model.casefold()
+                )
+            ]
+            if not matches:
+                spinner.write(f"\nМодель не найдена: {argv_model}")
+                return
+            if len(matches) > 1:
+                spinner.write(
+                    f"\nМоделей с именем {argv_model} найдено: {len(matches)}"
+                )
+                return
+            model_index = matches[0]
+        else:
+            model_index = choose_number(
+                len(models), spinner.input("\nВыбери номер модели: "), spinner
+            )
         if model_index is None:
             return
         model = models[model_index]
@@ -791,6 +826,13 @@ def run(spinner):
         spinner.write("\nДоступные тесты:\n")
         for number, (_, title, _) in enumerate(tests, start=1):
             spinner.write(f"{format_list_number(number, len(tests))} - {title}")
+
+        if argv_test:
+            if argv_test > len(tests):
+                spinner.write(f"\nТест не найден: {argv_test}")
+                return
+            selected_tests = [tests[argv_test - 1]]
+            break
 
         choice = spinner.input(
             "\nВыбери номер теста, X — все тесты, 0 — назад: "
@@ -830,9 +872,10 @@ def run(spinner):
 
 
 def main():
+    argv_model, argv_test = read_arguments()
     with Spinner(SHOW_SPINNER) as spinner:
         try:
-            run(spinner)
+            run(spinner, argv_model, argv_test)
         except Exception as error:
             spinner.write(f"\nОШИБКА: {error}")
         finally:

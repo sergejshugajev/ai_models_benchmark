@@ -1,4 +1,4 @@
-# AI Models Benchmark v0.9h
+# AI Models Benchmark v0.9i
 
 ## Назначение
 
@@ -39,6 +39,15 @@
 ```text
 python ai_models_benchmark.py
 ```
+
+Запуск по номеру или полному имени модели без учёта регистра и номеру теста:
+
+```text
+python ai_models_benchmark.py 2 7
+python ai_models_benchmark.py gpt-5.6-luna 7
+```
+
+При ошибочном номере или неоднозначном имени модели программа показывает причину и не переходит к интерактивному выбору.
 
 Для запуска из Windows без ввода команды:
 

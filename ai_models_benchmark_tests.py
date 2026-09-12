@@ -102,9 +102,19 @@ class SpinnerTests(unittest.TestCase):
 
 
 class RunTests(unittest.TestCase):
-    def run_with_test_choice(self, choice, run_side_effect=None, input_values=None):
+    def run_with_test_choice(
+        self,
+        choice,
+        run_side_effect=None,
+        input_values=None,
+        argv_model="",
+        argv_test=0,
+        available_models=None,
+    ):
         spinner = Mock()
-        spinner.input.side_effect = input_values or ["1", choice]
+        spinner.input.side_effect = (
+            input_values if input_values is not None else ["1", choice]
+        )
         model = {
             "source": "ollama",
             "name": "test-model",
@@ -118,7 +128,7 @@ class RunTests(unittest.TestCase):
         prepare_model = Mock()
         run_test = Mock(return_value=result)
         protocol = {
-            "get_models": Mock(return_value=(True, [model])),
+            "get_models": Mock(return_value=(True, available_models or [model])),
             "prepare": prepare_model,
             "run": run_test,
             "metrics": "generation",
@@ -139,7 +149,7 @@ class RunTests(unittest.TestCase):
         ):
             if run_side_effect is not None:
                 run_test.side_effect = run_side_effect
-            benchmark.run(spinner)
+            benchmark.run(spinner, argv_model, argv_test)
 
         return spinner, model, tests, prepare_model, run_test, save_report
 
@@ -184,6 +194,68 @@ class RunTests(unittest.TestCase):
         self.assertEqual(spinner.input.call_count, 4)
         run_test.assert_called_once()
         save_report.assert_called_once()
+
+    def test_arguments_select_model_by_number_or_name(self):
+        for model_value in ("1", "test-model"):
+            with self.subTest(model=model_value):
+                spinner, _, _, _, run_test, _ = self.run_with_test_choice(
+                    None,
+                    input_values=[],
+                    argv_model=model_value,
+                    argv_test=2,
+                )
+                spinner.input.assert_not_called()
+                run_test.assert_called_once()
+
+    def test_arguments_reject_unknown_model(self):
+        spinner, _, _, prepare_model, run_test, _ = self.run_with_test_choice(
+            None, input_values=[], argv_model="missing", argv_test=1
+        )
+
+        spinner.write.assert_any_call("\nМодель не найдена: missing")
+        prepare_model.assert_not_called()
+        run_test.assert_not_called()
+
+    def test_arguments_reject_duplicate_model_name(self):
+        models = [
+            {"source": "ollama", "name": "same", "full_name": "first"},
+            {"source": "ollama", "name": "same", "full_name": "second"},
+        ]
+        spinner, _, _, prepare_model, run_test, _ = self.run_with_test_choice(
+            None,
+            input_values=[],
+            argv_model="same",
+            argv_test=1,
+            available_models=models,
+        )
+
+        spinner.write.assert_any_call("\nМоделей с именем same найдено: 2")
+        prepare_model.assert_not_called()
+        run_test.assert_not_called()
+
+    def test_arguments_reject_unknown_test(self):
+        spinner, _, _, prepare_model, run_test, _ = self.run_with_test_choice(
+            None, input_values=[], argv_model="1", argv_test=7
+        )
+
+        spinner.write.assert_any_call("\nТест не найден: 7")
+        prepare_model.assert_not_called()
+        run_test.assert_not_called()
+
+
+class ReadArgumentsTests(unittest.TestCase):
+    def test_reads_model_and_test(self):
+        with patch.object(
+            benchmark.sys, "argv", ["benchmark.py", "model", "7"]
+        ):
+            self.assertEqual(benchmark.read_arguments(), ("model", 7))
+
+    def test_rejects_invalid_arguments(self):
+        for arguments in (["model"], ["model", "x"], ["model", "0"]):
+            with self.subTest(arguments=arguments):
+                with patch.object(benchmark.sys, "argv", ["benchmark.py", *arguments]):
+                    with self.assertRaises(SystemExit):
+                        benchmark.read_arguments()
 
 
 class ProviderFlowIntegrationTests(unittest.TestCase):
